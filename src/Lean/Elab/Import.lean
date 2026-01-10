@@ -51,14 +51,14 @@ def processHeaderCore
     : IO (Environment × MessageLog) := do
   -- Determine import level based on context
   -- Emscripten/WASM builds only have .exported level files, so always use that
-  let level := if System.Platform.isEmscripten then
-    IO.eprintln "[DEBUG:IMPORT] Emscripten detected, using .exported level"
+  let level : OLeanLevel := if System.Platform.isEmscripten then
     .exported
   else if isModule then
     if Elab.inServer.get opts then .server else .exported
   else
     .private
-  IO.eprintln s!"[DEBUG:IMPORT] Import level = {repr level}, isModule = {isModule}"
+  if System.Platform.isEmscripten then
+    IO.eprintln s!"[DEBUG:IMPORT] Emscripten detected, using level = {repr level}"
   let (env, messages) ← try
     let env ←
       importModules (leakEnv := leakEnv) (loadExts := true) (level := level)
