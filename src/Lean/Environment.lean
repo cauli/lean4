@@ -1929,9 +1929,12 @@ private def ImportedModule.publicModule? (self : ImportedModule) : Option Module
     -- (should not have any constants)
     self.irData?.map (·.1)
 
-private def ImportedModule.getData? (self : ImportedModule) (level : OLeanLevel) : Option ModuleData := do
+private def ImportedModule.getData? (self : ImportedModule) (level : OLeanLevel) : Option ModuleData :=
   -- Without the module system, we only have the exported level.
-  let level := if (← self.publicModule?).isModule then level else .exported
+  -- Use .exported as fallback if publicModule? is unavailable (e.g., WASM with partial files)
+  let level := match self.publicModule? with
+    | some mod => if mod.isModule then level else .exported
+    | none => .exported
   self.parts[level.ctorIdx]?.map (·.1)
 
 /-- The main module data that will eventually be used to construct the kernel environment. -/
@@ -1940,7 +1943,9 @@ private def ImportedModule.mainModule? (self : ImportedModule) : Option ModuleDa
     let level := if self.importAll then OLeanLevel.private else .exported
     -- Fall back to lower levels if requested level doesn't exist.
     -- This handles builds that only include base .olean files (e.g., WASM/Emscripten).
+    -- Also try directly accessing parts[0] as last resort for partial builds.
     self.getData? level <|> self.getData? .server <|> self.getData? .exported
+      <|> self.parts[0]?.map (·.1)
   else
     self.irData?.map (·.1)
 
