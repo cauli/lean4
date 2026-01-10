@@ -220,10 +220,31 @@ int run_shell_main(int argc, char* argv[], object_ref const & shell_opts) {
     }
     // #region agent log
 #ifdef LEAN_EMSCRIPTEN
-    EM_ASM({ console.log("[DEBUG:G] Args list built, calling lean_shell_main..."); });
+    EM_ASM({ console.log("[DEBUG:G] Args list built, preparing arguments..."); });
 #endif
     // #endregion
-    object * result = lean_shell_main(args.steal(), shell_opts.to_obj_arg());
+    
+    // Prepare arguments separately to isolate crash
+#ifdef LEAN_EMSCRIPTEN
+    EM_ASM({ console.log("[DEBUG:G] Calling args.steal()..."); });
+#endif
+    object * args_obj = args.steal();
+#ifdef LEAN_EMSCRIPTEN
+    EM_ASM({ console.log("[DEBUG:G] args.steal() returned: " + $0); }, (int)(uintptr_t)args_obj);
+#endif
+    
+#ifdef LEAN_EMSCRIPTEN
+    EM_ASM({ console.log("[DEBUG:G] Calling shell_opts.to_obj_arg()..."); });
+#endif
+    object * opts_obj = shell_opts.to_obj_arg();
+#ifdef LEAN_EMSCRIPTEN
+    EM_ASM({ console.log("[DEBUG:G] shell_opts.to_obj_arg() returned: " + $0); }, (int)(uintptr_t)opts_obj);
+#endif
+
+#ifdef LEAN_EMSCRIPTEN
+    EM_ASM({ console.log("[DEBUG:G] Now calling lean_shell_main..."); });
+#endif
+    object * result = lean_shell_main(args_obj, opts_obj);
     // #region agent log
 #ifdef LEAN_EMSCRIPTEN
     EM_ASM({ console.log("[DEBUG:G] lean_shell_main returned, processing result..."); });
