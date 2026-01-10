@@ -1937,7 +1937,10 @@ private def ImportedModule.getData? (self : ImportedModule) (level : OLeanLevel)
 /-- The main module data that will eventually be used to construct the kernel environment. -/
 private def ImportedModule.mainModule? (self : ImportedModule) : Option ModuleData :=
   if self.needsData then
-    self.getData? (if self.importAll then .private else .exported)
+    let level := if self.importAll then OLeanLevel.private else .exported
+    -- Fall back to lower levels if requested level doesn't exist
+    -- This handles older .olean files that only have .exported level
+    self.getData? level <|> self.getData? .server <|> self.getData? .exported
   else
     self.irData?.map (·.1)
 
