@@ -2116,7 +2116,10 @@ where
       pure (arts.oleanParts (inServer := globalLevel ≥ .server))
     else
       findOLeanParts i.module
-    readModuleDataParts fnames
+    IO.eprintln s!"[DEBUG:LOAD] loadData for {i.module}: fnames = {fnames}"
+    let result ← readModuleDataParts fnames
+    IO.eprintln s!"[DEBUG:LOAD] loadData result for {i.module}: {result.size} parts"
+    return result
   loadIR? i := do
     let irFile? ← if let some arts := arts.find? i.module then
       pure arts.ir?
@@ -2187,9 +2190,13 @@ See also `importModules` for parameter documentation.
 def finalizeImport (s : ImportState) (imports : Array Import) (opts : Options) (trustLevel : UInt32 := 0)
     (leakEnv loadExts : Bool) (level := OLeanLevel.private) (isModule := level != .private) :
     IO Environment := do
+  IO.eprintln s!"[DEBUG:ENV] finalizeImport called, moduleNames = {s.moduleNames.size}"
   let modules := s.moduleNames.filterMap (s.moduleNameMap[·]?)
+  IO.eprintln s!"[DEBUG:ENV] modules count = {modules.size}"
   let moduleData ← modules.mapM fun mod => do
+    IO.eprintln s!"[DEBUG:ENV] Processing module {mod.module}: parts.size = {mod.parts.size}, needsData = {mod.needsData}, importAll = {mod.importAll}"
     let some data := mod.mainModule? |
+      IO.eprintln s!"[DEBUG:ENV] mainModule? returned none for {mod.module}"
       throw <| IO.userError s!"missing data file for module {mod.module}"
     return data
   let irData ← modules.mapM fun mod => do
