@@ -209,17 +209,10 @@ struct module_file {
 extern "C" LEAN_EXPORT object * lean_read_module_data_parts(b_obj_arg ofnames) {
     array_ref<string_ref> fnames(ofnames, true);
 
-#ifdef LEAN_EMSCRIPTEN
-    EM_ASM({ console.log("[DEBUG:OLEAN] lean_read_module_data_parts called with " + $0 + " files"); }, fnames.size());
-#endif
-
     // first read in all headers
     std::vector<module_file> files;
     for (auto const & fname : fnames) {
         std::string olean_fn = fname.to_std_string();
-#ifdef LEAN_EMSCRIPTEN
-        EM_ASM({ console.log("[DEBUG:OLEAN] Reading file: " + UTF8ToString($0)); }, olean_fn.c_str());
-#endif
         try {
 #ifdef LEAN_WINDOWS
             // Use CreateFile with proper sharing flags, then convert to POSIX fd for shared code
@@ -260,13 +253,6 @@ extern "C" LEAN_EXPORT object * lean_read_module_data_parts(b_obj_arg ofnames) {
                 || strncmp(header.githash, LEAN_GITHASH, sizeof(header.githash)) != 0
 #endif
             ) {
-#ifdef LEAN_EMSCRIPTEN
-                EM_ASM({ 
-                    console.log("[DEBUG:OLEAN] Incompatible header for " + UTF8ToString($0));
-                    console.log("[DEBUG:OLEAN]   file version: " + $1 + ", expected: " + $2);
-                    console.log("[DEBUG:OLEAN]   file flags: " + $3 + ", expected: " + $4);
-                }, olean_fn.c_str(), header.version, default_header.version, header.flags, default_header.flags);
-#endif
                 return io_result_mk_error((sstream() << "failed to read file '" << olean_fn << "', incompatible header").str());
             }
             char * base_addr = reinterpret_cast<char *>(header.base_addr);
@@ -376,9 +362,6 @@ extern "C" LEAN_EXPORT object * lean_read_module_data_parts(b_obj_arg ofnames) {
 
         res.push_back(object_ref(mod_region));
     }
-#ifdef LEAN_EMSCRIPTEN
-    EM_ASM({ console.log("[DEBUG:OLEAN] Successfully read " + $0 + " module parts"); }, res.size());
-#endif
     return io_result_mk_ok(to_array(res));
 }
 }

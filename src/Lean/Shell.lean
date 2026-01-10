@@ -451,25 +451,20 @@ where
 
 @[export lean_shell_main]
 def shellMain (args : List String) (opts : ShellOptions) : IO UInt32 := do
-  IO.eprintln "[DEBUG:H] shellMain entered"
-  IO.eprintln s!"[DEBUG:H] args = {args}"
   if opts.printPrefix then
     IO.println (← getBuildDir)
     return 0
   if opts.printLibDir then
     IO.println (← getLibDir (← getBuildDir))
     return 0
-  IO.eprintln "[DEBUG:H] Checking maxMemory/timeout settings"
   let maxMemory := maxMemory.get opts.leanOpts
   if maxMemory != 0 then
     Internal.setMaxMemory (maxMemory.toUSize * 1024 * 1024)
   let timeout := timeout.get opts.leanOpts
   if timeout != 0 then
     Internal.setMaxHeartbeat (timeout.toUSize * 1000)
-  IO.eprintln "[DEBUG:H] Checking component type"
   match opts.component with
   | .frontend =>
-    IO.eprintln "[DEBUG:H] Component is frontend"
     pure ()
   | .watchdog =>
     return ← Server.Watchdog.watchdogMain opts.forwardedArgs.toList
@@ -483,12 +478,10 @@ def shellMain (args : List String) (opts : ShellOptions) : IO UInt32 := do
         pure args.toArray
     printImportsJson fns
     return 0
-  IO.eprintln "[DEBUG:I] Extracting fileName from args"
   let (fileName?, args) :=
     match args with
     | fileName :: args => (some fileName, args)
     | [] => (none, args)
-  IO.eprintln s!"[DEBUG:I] fileName? = {fileName?}"
   if !opts.run && !args.isEmpty then
     IO.eprintln "Expected exactly one file name"
     displayHelp (useStderr := true)
