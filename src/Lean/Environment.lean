@@ -2089,7 +2089,11 @@ where
       -- `B ≥ public`?
       let isExported := isExported && i.isExported
       let needsIRTrans := needsIRTrans || needsData && i.isMeta
-      let needsIR := needsIRTrans || importAll || globalLevel > .exported
+      -- In Emscripten, skip IR loading entirely (too large for browser)
+      let needsIR := if System.Platform.isEmscripten then
+        false
+      else
+        needsIRTrans || importAll || globalLevel > .exported
       if !needsData && !needsIR then
         continue
 
@@ -2111,7 +2115,8 @@ where
         let needsIR := needsIRTrans || importAll
         let irPhases := if irPhases == mod.irPhases then irPhases else .all
         let parts ← if needsData && mod.parts.isEmpty then loadData i else pure mod.parts
-        let irData? ← if needsIR && mod.irData?.isNone then loadIR? i else pure mod.irData?
+        -- In Emscripten, skip IR loading
+        let irData? ← if needsIR && mod.irData?.isNone && !System.Platform.isEmscripten then loadIR? i else pure mod.irData?
         if importAll != mod.importAll || isExported != mod.isExported ||
             needsIRTrans != mod.needsIRTrans || needsData != mod.needsData || irPhases != mod.irPhases then
           modify fun s => { s with moduleNameMap := s.moduleNameMap.insert i.module { mod with
@@ -2122,7 +2127,8 @@ where
 
       -- newly discovered module
       let parts ← if needsData then loadData i else pure #[]
-      let irData? ← if needsIR then loadIR? i else pure none
+      -- In Emscripten, skip IR loading
+      let irData? ← if needsIR && !System.Platform.isEmscripten then loadIR? i else pure none
       let mod := { i with importAll, isExported, irPhases, parts, irData?, needsIRTrans, needsData }
       goRec mod
       modify fun s => { s with
