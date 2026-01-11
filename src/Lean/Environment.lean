@@ -1999,6 +1999,11 @@ private def findOLeanParts (mod : Name) : IO (Array System.FilePath) := do
     let pFile := OLeanLevel.private.adjustFileName mFile
     if (← pFile.pathExists) then
       fnames := fnames.push pFile
+  -- Debug: log problematic module
+  if mod.toString.contains "String.Lemmas.Basic" then
+    IO.eprintln s!"[DEBUG:FIND] {mod}: found {fnames.size} parts"
+    for f in fnames do
+      IO.eprintln s!"  - {f}"
   return fnames
 
 partial def importModulesCore
@@ -2197,6 +2202,10 @@ def finalizeImport (s : ImportState) (imports : Array Import) (opts : Options) (
     IO Environment := do
   let modules := s.moduleNames.filterMap (s.moduleNameMap[·]?)
   let moduleData ← modules.mapM fun mod => do
+    -- Debug problematic module
+    if mod.module.toString.contains "String.Lemmas.Basic" then
+      IO.eprintln s!"[DEBUG:FINALIZE] {mod.module}: parts.size={mod.parts.size}"
+      IO.eprintln s!"  mainModule? = {mod.mainModule?.isSome}"
     let some data := mod.mainModule? |
       throw <| IO.userError s!"missing data file for module {mod.module}"
     return data
