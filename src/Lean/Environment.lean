@@ -2076,7 +2076,14 @@ where
   go (imports : Array Import) (importAll isExported needsData needsIRTrans : Bool) := do
     for i in imports do
       -- `B > none`?
-      let needsData := needsData && (i.isExported || importAll)
+      -- In Emscripten, we ALWAYS need .olean data (no IR fallback), so keep needsData=true
+      let needsData := if System.Platform.isEmscripten then
+        needsData
+      else
+        needsData && (i.isExported || importAll)
+      -- Debug problematic module
+      if i.module.toString.contains "String.Lemmas.Basic" then
+        IO.eprintln s!"[DEBUG:GO] {i.module}: needsData={needsData}, importAll={importAll}, isExported={isExported}"
       -- `B ≥ privateAll`?
       let importAll := globalLevel == .private || importAll && i.importAll
       -- `B ≥ public`?
