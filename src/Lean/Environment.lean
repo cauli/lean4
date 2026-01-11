@@ -2222,10 +2222,15 @@ def finalizeImport (s : ImportState) (imports : Array Import) (opts : Options) (
     let some data := mod.mainModule? |
       throw <| IO.userError s!"missing data file for module {mod.module}"
     return data
-  let irData ← modules.mapM fun mod => do
-    let some data := mod.interpData? level |
-      throw <| IO.userError s!"missing IR data file for module {mod.module}"
-    return data
+  -- In Emscripten, IR files are not available (too large for browser)
+  -- Skip IR data loading and return empty array
+  let irData ← if System.Platform.isEmscripten then
+    pure #[]
+  else
+    modules.mapM fun mod => do
+      let some data := mod.interpData? level |
+        throw <| IO.userError s!"missing IR data file for module {mod.module}"
+      return data
   let numPrivateConsts := moduleData.foldl (init := 0) fun numPrivateConsts data =>
     numPrivateConsts + data.constants.size
   let numPrivateConsts := irData.foldl (init := numPrivateConsts) fun numPrivateConsts data =>
