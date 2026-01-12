@@ -58,7 +58,7 @@ def processHeaderCore
   else
     .private
   if System.Platform.isEmscripten then
-    IO.eprintln s!"[DEBUG:IMPORT] Emscripten detected, using level = {repr level}"
+    IO.println s!"[DEBUG:IMPORT] Emscripten detected, using level = {repr level}"
   let (env, messages) ← try
     let env ←
       importModules (leakEnv := leakEnv) (loadExts := true) (level := level)

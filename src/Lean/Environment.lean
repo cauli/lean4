@@ -2001,9 +2001,9 @@ private def findOLeanParts (mod : Name) : IO (Array System.FilePath) := do
       fnames := fnames.push pFile
   -- Debug: log problematic module
   if mod.toString.contains "String.Lemmas.Basic" then
-    IO.eprintln s!"[DEBUG:FIND] {mod}: found {fnames.size} parts"
+    IO.println s!"[DEBUG:FIND] {mod}: found {fnames.size} parts"
     for f in fnames do
-      IO.eprintln s!"  - {f}"
+      IO.println s!"  - {f}"
   return fnames
 
 partial def importModulesCore
@@ -2083,7 +2083,7 @@ where
         needsData && (i.isExported || importAll)
       -- Debug problematic module
       if i.module.toString.contains "String.Lemmas.Basic" then
-        IO.eprintln s!"[DEBUG:GO] {i.module}: needsData={needsData}, importAll={importAll}, isExported={isExported}"
+        IO.println s!"[DEBUG:GO] {i.module}: needsData={needsData}, importAll={importAll}, isExported={isExported}"
       -- `B ≥ privateAll`?
       let importAll := globalLevel == .private || importAll && i.importAll
       -- `B ≥ public`?
@@ -2214,11 +2214,12 @@ def finalizeImport (s : ImportState) (imports : Array Import) (opts : Options) (
     (leakEnv loadExts : Bool) (level := OLeanLevel.private) (isModule := level != .private) :
     IO Environment := do
   let modules := s.moduleNames.filterMap (s.moduleNameMap[·]?)
-  let moduleData ← modules.mapM fun mod => do
-    -- Debug problematic module
-    if mod.module.toString.contains "String.Lemmas.Basic" then
-      IO.eprintln s!"[DEBUG:FINALIZE] {mod.module}: parts.size={mod.parts.size}"
-      IO.eprintln s!"  mainModule? = {mod.mainModule?.isSome}"
+  if System.Platform.isEmscripten then
+    IO.println s!"[DEBUG:PROGRESS] Loading {modules.size} modules..."
+  let moduleData ← modules.mapIdxM fun idx mod => do
+    -- Progress counter for Emscripten (every 50 modules or on error)
+    if System.Platform.isEmscripten && (idx.val % 50 == 0 || idx.val + 1 == modules.size) then
+      IO.println s!"[DEBUG:PROGRESS] {idx.val + 1}/{modules.size}: {mod.module}"
     let some data := mod.mainModule? |
       throw <| IO.userError s!"missing data file for module {mod.module}"
     return data

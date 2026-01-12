@@ -146,8 +146,8 @@ def runFrontend
     (printStats : Bool := false)
     (setup? : Option ModuleSetup := none)
     : IO (Option Environment) := do
-  IO.eprintln "[DEBUG:L] runFrontend entered"
-  IO.eprintln s!"[DEBUG:L] fileName = {fileName}, mainModuleName = {mainModuleName}"
+  IO.println "[DEBUG:L] runFrontend entered"
+  IO.println s!"[DEBUG:L] fileName = {fileName}, mainModuleName = {mainModuleName}"
   let startTime := (← IO.monoNanosNow).toFloat / 1000000000
   let inputCtx := Parser.mkInputContext input fileName
   let opts := Lean.internal.cmdlineSnapshots.setIfNotSet opts true
@@ -174,20 +174,20 @@ def runFrontend
         isModule := stx.isModule
         mainModuleName, opts, trustLevel, plugins
       }
-  IO.eprintln "[DEBUG:M] About to call Language.Lean.process"
+  IO.println "[DEBUG:M] About to call Language.Lean.process"
   let processor := Language.Lean.process
   let snap ← processor setup none ctx
-  IO.eprintln "[DEBUG:M] Language.Lean.process completed"
+  IO.println "[DEBUG:M] Language.Lean.process completed"
   let snaps := Language.toSnapshotTree snap
   let severityOverrides := errorOnKinds.foldl (·.insert · .error) {}
 
-  IO.eprintln "[DEBUG:N] About to run and report snapshots"
+  IO.println "[DEBUG:N] About to run and report snapshots"
   -- reporting should be done before any early exit from the function
   let hasErrors ← snaps.runAndReport opts jsonOutput severityOverrides
-  IO.eprintln s!"[DEBUG:N] Reporting complete, hasErrors = {hasErrors}"
+  IO.println s!"[DEBUG:N] Reporting complete, hasErrors = {hasErrors}"
 
   let some cmdState := Language.Lean.waitForFinalCmdState? snap
-    | IO.eprintln "[DEBUG:N] waitForFinalCmdState? returned none"
+    | IO.println "[DEBUG:N] waitForFinalCmdState? returned none"
       return none
   let env := cmdState.env
   let finalOpts := cmdState.scopes[0]!.opts
