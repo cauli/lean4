@@ -2223,9 +2223,15 @@ def finalizeImport (s : ImportState) (imports : Array Import) (opts : Options) (
       throw <| IO.userError s!"missing data file for module {mod.module}"
     return data
   -- In Emscripten, IR files are not available (too large for browser)
-  -- Skip IR data loading and return empty array
+  -- Return array of empty ModuleData to match modules.size
   let irData ← if System.Platform.isEmscripten then
-    pure #[]
+    -- Create empty ModuleData for each module (same size as modules array)
+    pure <| modules.map fun _ => {
+      imports := #[]
+      constNames := #[]
+      constants := #[]
+      extraConstNames := #[]
+    }
   else
     modules.mapM fun mod => do
       let some data := mod.interpData? level |
