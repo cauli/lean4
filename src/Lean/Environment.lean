@@ -2227,10 +2227,12 @@ def finalizeImport (s : ImportState) (imports : Array Import) (opts : Options) (
   let irData ← if System.Platform.isEmscripten then
     -- Create empty ModuleData for each module (same size as modules array)
     pure <| modules.map fun _ => {
+      isModule := false
       imports := #[]
       constNames := #[]
       constants := #[]
       extraConstNames := #[]
+      entries := #[]
     }
   else
     modules.mapM fun mod => do
