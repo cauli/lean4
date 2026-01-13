@@ -2218,8 +2218,9 @@ def finalizeImport (s : ImportState) (imports : Array Import) (opts : Options) (
     IO.println s!"[DEBUG:PROGRESS] Loading {modules.size} modules..."
   let moduleData ← modules.mapIdxM fun idx mod => do
     -- Progress counter for Emscripten (every 50 modules or on error)
-    if System.Platform.isEmscripten && (idx.val % 50 == 0 || idx.val + 1 == modules.size) then
-      IO.println s!"[DEBUG:PROGRESS] {idx.val + 1}/{modules.size}: {mod.module}"
+    let i : Nat := idx
+    if System.Platform.isEmscripten && (i % 50 == 0 || i + 1 == modules.size) then
+      IO.println s!"[DEBUG:PROGRESS] {i + 1}/{modules.size}: {mod.module}"
     let some data := mod.mainModule? |
       throw <| IO.userError s!"missing data file for module {mod.module}"
     return data
