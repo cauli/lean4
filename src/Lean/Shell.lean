@@ -51,6 +51,83 @@ opaque emitLLVM (env : Environment) (modName : Name) (filepath : FilePath) : IO 
 @[extern "lean_display_cumulative_profiling_times"]
 opaque displayCumulativeProfilingTimes : BaseIO Unit
 
+/-! ## WASM API
+
+These functions provide a WASM-friendly API that caches the environment
+between calls, avoiding the slow re-import of Init modules on each compile.
+-/
+
+/-- Cached environment for WASM reuse. Initialized on first compile. -/
+private initialize wasmEnvCache : IO.Ref (Option Environment) ← IO.mkRef none
+
+/-- Get or create the cached WASM environment with Init imported. -/
+def getOrCreateWasmEnv : IO Environment := do
+  if let some env ← wasmEnvCache.get then
+    return env
+  IO.println "[WASM] First run - importing Init modules..."
+  let env ← importModules #[{ module := `Init }] {} 0
+  wasmEnvCache.set (some env)
+  IO.println "[WASM] Environment cached for future runs"
+  return env
+
+/--
+Compile Lean code using a cached environment.
+
+This is the main WASM entry point. The first call will import Init modules (slow),
+but subsequent calls reuse the cached environment (fast).
+
+The `fileName` parameter is optional - it's only used as a label in error messages,
+not for actual file I/O. The `code` string is processed directly in memory.
+
+Returns 0 on success, 1 on error. Output is written to stdout as JSON.
+-/
+@[export lean_wasm_compile]
+def wasmCompile (code : String) (fileName : String := "<input>") : IO UInt32 := do
+  let env ← getOrCreateWasmEnv
+  let inputCtx := Parser.mkInputContext code fileName
+  let opts : Options := {}
+  let opts := Lean.internal.cmdlineSnapshots.setIfNotSet opts true
+
+  -- Use processCommands with the cached environment
+  let cmdState := Command.mkState env {} opts
+  let s ← Elab.IO.processCommands inputCtx { : Parser.ModuleParserState } cmdState
+
+  -- Output messages as JSON
+  let messages := s.commandState.messages.toList
+  for msg in messages do
+    -- Convert to interactive diagnostic, then to plain diagnostic for JSON
+    let interactiveDiag ← Widget.msgToInteractiveDiagnostic inputCtx.fileMap msg false
+    let diag := interactiveDiag.toDiagnostic
+    -- Add extra fields for WASM consumers
+    let json := Json.mkObj [
+      ("fileName", Json.str msg.fileName),
+      ("pos", Json.mkObj [("line", msg.pos.line), ("column", msg.pos.column)]),
+      ("endPos", match msg.endPos with
+        | some p => Json.mkObj [("line", p.line), ("column", p.column)]
+        | none => Json.null),
+      ("severity", match msg.severity with
+        | .error => "error" | .warning => "warning" | .information => "information"),
+      ("caption", msg.caption),
+      ("data", diag.message),
+      ("isSilent", msg.isSilent),
+      ("keepFullRange", msg.keepFullRange),
+      ("kind", Json.str msg.kind.toString)
+    ]
+    IO.println json.compress
+
+  -- Return success/failure
+  let hasErrors := messages.any (·.severity == .error)
+  return if hasErrors then 1 else 0
+
+/--
+Reset the WASM environment cache.
+Call this if you need to re-import modules (e.g., after changing search paths).
+-/
+@[export lean_wasm_reset]
+def wasmReset : IO Unit := do
+  wasmEnvCache.set none
+  IO.println "[WASM] Environment cache cleared"
+
 /-- Whether Lean was built with an address sanitizer enabled. -/
 @[extern "lean_internal_has_address_sanitizer"]
 opaque Internal.hasAddressSanitizer (_ : Unit) : Bool
