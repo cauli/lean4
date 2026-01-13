@@ -89,7 +89,7 @@ def wasmCompile (code : String) (fileName : String := "<input>") : IO UInt32 := 
   let opts := Lean.internal.cmdlineSnapshots.setIfNotSet opts true
 
   -- Use processCommands with the cached environment
-  let cmdState := Command.mkState env {} opts
+  let cmdState := Elab.Command.mkState env {} opts
   let s ← Elab.IO.processCommands inputCtx { : Parser.ModuleParserState } cmdState
 
   -- Output messages as JSON
