@@ -138,7 +138,7 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Emscripten")
 
     # From https://emscripten.org/docs/compiling/WebAssembly.html#backends:
     # > The simple and safe thing is to pass all -s flags at both compile and link time.
-    set(EMSCRIPTEN_SETTINGS "-sALLOW_MEMORY_GROWTH=1 -sDISABLE_EXCEPTION_CATCHING=0 -pthread -mtail-call")
+    set(EMSCRIPTEN_SETTINGS "-sALLOW_MEMORY_GROWTH=0 -sDISABLE_EXCEPTION_CATCHING=0 -pthread -mtail-call")
 
     # EMSCRIPTEN_DEBUG: Enable readable function names and assertions for debugging
     # This makes the WASM larger and slower but shows actual function names in stack traces
