@@ -62,12 +62,15 @@ private initialize wasmEnvCache : IO.Ref (Option Environment) ← IO.mkRef none
 
 /-- Get or create the cached WASM environment with Init imported. -/
 def getOrCreateWasmEnv : IO Environment := do
+  IO.eprintln "[WASM DEBUG] getOrCreateWasmEnv: checking cache..."
   if let some env ← wasmEnvCache.get then
+    IO.eprintln "[WASM DEBUG] getOrCreateWasmEnv: returning cached env"
     return env
-  IO.println "[WASM] First run - importing Init modules..."
+  IO.eprintln "[WASM DEBUG] getOrCreateWasmEnv: cache miss, importing Init modules..."
   let env ← importModules #[{ module := `Init }] {} 0
+  IO.eprintln "[WASM DEBUG] getOrCreateWasmEnv: importModules completed"
   wasmEnvCache.set (some env)
-  IO.println "[WASM] Environment cached for future runs"
+  IO.eprintln "[WASM DEBUG] getOrCreateWasmEnv: environment cached"
   return env
 
 /--
@@ -83,17 +86,31 @@ Returns 0 on success, 1 on error. Output is written to stdout as JSON.
 -/
 @[export lean_wasm_compile]
 def wasmCompile (code : String) (fileName : String := "<input>") : IO UInt32 := do
+  IO.eprintln s!"[WASM DEBUG] wasmCompile called with code length={code.length}, fileName={fileName}"
+  IO.eprintln "[WASM DEBUG] Getting or creating environment..."
   let env ← getOrCreateWasmEnv
+  IO.eprintln "[WASM DEBUG] Environment ready"
+
+  IO.eprintln "[WASM DEBUG] Creating input context..."
   let inputCtx := Parser.mkInputContext code fileName
+  IO.eprintln "[WASM DEBUG] Input context created"
+
+  IO.eprintln "[WASM DEBUG] Setting up options..."
   let opts : Options := {}
   let opts := Lean.internal.cmdlineSnapshots.setIfNotSet opts true
+  IO.eprintln "[WASM DEBUG] Options ready"
 
-  -- Use processCommands with the cached environment
+  IO.eprintln "[WASM DEBUG] Creating command state..."
   let cmdState := Elab.Command.mkState env {} opts
+  IO.eprintln "[WASM DEBUG] Command state created"
+
+  IO.eprintln "[WASM DEBUG] Starting processCommands..."
   let s ← Elab.IO.processCommands inputCtx { : Parser.ModuleParserState } cmdState
+  IO.eprintln "[WASM DEBUG] processCommands completed"
 
   -- Output messages as JSON
   let messages := s.commandState.messages.toList
+  IO.eprintln s!"[WASM DEBUG] Processing {messages.length} messages..."
   for msg in messages do
     -- Convert to interactive diagnostic, then to plain diagnostic for JSON
     let interactiveDiag ← Widget.msgToInteractiveDiagnostic inputCtx.fileMap msg false
@@ -117,6 +134,7 @@ def wasmCompile (code : String) (fileName : String := "<input>") : IO UInt32 := 
 
   -- Return success/failure
   let hasErrors := messages.any (·.severity == .error)
+  IO.eprintln s!"[WASM DEBUG] Done, hasErrors={hasErrors}"
   return if hasErrors then 1 else 0
 
 /--
