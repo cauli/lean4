@@ -129,6 +129,9 @@ if ("${CHECK_OLEAN_VERSION}" MATCHES "ON")
 endif()
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Emscripten")
+    # Disable multi-threading for WASM (no pthread support)
+    set(MULTI_THREAD OFF)
+
     # TODO(WN): code size/performance tradeoffs
     # - we're using -O3; it's /okay/ (param "-03" is set in LEANC_FLAGS)
     # - "-Oz" produces quite slow code
@@ -138,19 +141,19 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Emscripten")
 
     # From https://emscripten.org/docs/compiling/WebAssembly.html#backends:
     # > The simple and safe thing is to pass all -s flags at both compile and link time.
-    set(EMSCRIPTEN_SETTINGS "-sALLOW_MEMORY_GROWTH=0 -sDISABLE_EXCEPTION_CATCHING=0 -pthread -mtail-call")
+    set(EMSCRIPTEN_SETTINGS "-sALLOW_MEMORY_GROWTH=1 -sDISABLE_EXCEPTION_CATCHING=0 -mtail-call")
 
     # EMSCRIPTEN_DEBUG: Enable readable function names and assertions for debugging
     # This makes the WASM larger and slower but shows actual function names in stack traces
     # instead of mangled names like "invoke_III"
-    # option(EMSCRIPTEN_DEBUG "Enable debug-friendly WASM build with readable function names" ON)
-    # if(EMSCRIPTEN_DEBUG)
-    #     message(STATUS "Emscripten debug mode: enabling readable function names and assertions")
-    #     # --profiling-funcs keeps function names without full debug info
-    #     # -sASSERTIONS=1 enables runtime assertions
-    #     # -g3 adds full debug info (optional, can use -g for less)
-    #     string(APPEND EMSCRIPTEN_SETTINGS " --profiling-funcs -sASSERTIONS=1 -g3")
-    # endif()
+    option(EMSCRIPTEN_DEBUG "Enable debug-friendly WASM build with readable function names" ON)
+    if(EMSCRIPTEN_DEBUG)
+        message(STATUS "Emscripten debug mode: enabling readable function names and assertions")
+        # --profiling-funcs keeps function names without full debug info
+        # -sASSERTIONS=1 enables runtime assertions
+        # -g3 adds full debug info (optional, can use -g for less)
+        string(APPEND EMSCRIPTEN_SETTINGS " --profiling-funcs -g3")
+    endif()
 
     string(APPEND LEANC_EXTRA_CC_FLAGS " -D LEAN_EMSCRIPTEN ${EMSCRIPTEN_SETTINGS}")
     string(APPEND LEAN_EXTRA_CXX_FLAGS " -D LEAN_EMSCRIPTEN ${EMSCRIPTEN_SETTINGS}")
@@ -700,7 +703,7 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Emscripten")
   # in this file.
   # PTHREAD_POOL_SIZE=4 creates a pool of 4 workers for thread spawning
   # This generates lean.worker.js alongside lean.js
-  string(APPEND LEAN_EXE_LINKER_FLAGS " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} -lnodefs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=1 -s LINKABLE=1 -s EXPORT_ALL=1 -s ERROR_ON_UNDEFINED_SYMBOLS=0 -sPTHREAD_POOL_SIZE=4")
+  string(APPEND LEAN_EXE_LINKER_FLAGS " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} -lnodefs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=1 -s LINKABLE=1 -s EXPORT_ALL=1 -s ERROR_ON_UNDEFINED_SYMBOLS=0")
 endif()
 
 # Build the compiler using the bootstrapped C sources for stage0, and use
@@ -890,8 +893,7 @@ else()
 endif()
 
 # For Emscripten cross-compilation, Lake needs to know the extra compiler flags
-# since it gets its default flags from the lean binary (which is from the previous stage)
-# We do this because we need the "-pthreads" flag in Emscripten, otherwise the build fails.
+# since it gets its default flags from the lean binary (which is from the previous stage).
 if(${CMAKE_SYSTEM_NAME} MATCHES "Emscripten")
   toml_escape("${EMSCRIPTEN_SETTINGS}" EMSCRIPTEN_SETTINGS_TOML)
   set(LEAN_EXTRA_LAKEFILE_TOML "moreLeancArgs = [${EMSCRIPTEN_SETTINGS_TOML}]")
