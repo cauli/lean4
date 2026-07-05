@@ -129,15 +129,6 @@ jobs:
         run: |
           ulimit -c unlimited  # coredumps
 
-          # Increase Node.js heap size for Emscripten's acorn-optimizer when building WASM.
-          # The lean.js file is very large (~90MB) and the optimizer runs out of memory
-          # with the default heap size. See: https://github.com/emscripten-core/emscripten/issues/24558
-          # Persisted via GITHUB_ENV because the optimizer runs in the later build steps.
-          if [[ -n '${{ matrix.wasm }}' ]]; then
-            export NODE_OPTIONS="--max-old-space-size=8192"
-            echo "NODE_OPTIONS=$NODE_OPTIONS" >> "$GITHUB_ENV"
-          fi
-
           # For 32-bit cross-compilation (e.g., Web Assembly), configure pkg-config
           # to find 32-bit libraries instead of the default 64-bit ones.
           # Persisted via GITHUB_ENV because stage0's CMake configure runs in the
@@ -191,6 +182,13 @@ jobs:
       - name: Build Stage 0 & Configure Stage 1
         run: |
           ulimit -c unlimited  # coredumps
+          # Increase Node.js heap size for Emscripten's acorn-optimizer when building WASM.
+          # The lean.js file is very large (~90MB) and the optimizer runs out of memory
+          # with the default heap size. See: https://github.com/emscripten-core/emscripten/issues/24558
+          # Exported inline because GitHub Actions refuses to persist NODE_OPTIONS via GITHUB_ENV.
+          if [[ -n '${{ matrix.wasm }}' ]]; then
+            export NODE_OPTIONS="--max-old-space-size=8192"
+          fi
           time make -C build stage1-configure -j$NPROC
       - name: Download Lake Cache
         if: matrix.name == 'Linux Lake (Cached)'
@@ -203,6 +201,10 @@ jobs:
         timeout-minutes: ${{ matrix.build-timeout || 360 }}
         run: |
           ulimit -c unlimited  # coredumps
+          # See "Build Stage 0 & Configure Stage 1" for why this is exported inline.
+          if [[ -n '${{ matrix.wasm }}' ]]; then
+            export NODE_OPTIONS="--max-old-space-size=8192"
+          fi
           time make -C build $TARGET_STAGE -j$NPROC
       # Should be done as early as possible and in particular *before* "Check rebootstrap" which
       # changes the state of stage1/
