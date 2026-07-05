@@ -141,12 +141,17 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Emscripten")
 
     # From https://emscripten.org/docs/compiling/WebAssembly.html#backends:
     # > The simple and safe thing is to pass all -s flags at both compile and link time.
-    set(EMSCRIPTEN_SETTINGS "-sALLOW_MEMORY_GROWTH=1 -sDISABLE_EXCEPTION_CATCHING=0 -mtail-call")
+    # -fwasm-exceptions uses native WASM exception handling instead of the
+    # JS-emulated kind (-sDISABLE_EXCEPTION_CATCHING=0), which routes every
+    # potentially-throwing call through a JS invoke_* trampoline. Lean's
+    # runtime is exception-heavy, so the emulated mode dominated profiles of
+    # olean import loading in the browser.
+    set(EMSCRIPTEN_SETTINGS "-sALLOW_MEMORY_GROWTH=1 -fwasm-exceptions -mtail-call")
 
     # EMSCRIPTEN_DEBUG: Enable readable function names and assertions for debugging
     # This makes the WASM larger and slower but shows actual function names in stack traces
     # instead of mangled names like "invoke_III"
-    option(EMSCRIPTEN_DEBUG "Enable debug-friendly WASM build with readable function names" ON)
+    option(EMSCRIPTEN_DEBUG "Enable debug-friendly WASM build with readable function names" OFF)
     if(EMSCRIPTEN_DEBUG)
         message(STATUS "Emscripten debug mode: enabling readable function names and assertions")
         # --profiling-funcs keeps function names without full debug info
