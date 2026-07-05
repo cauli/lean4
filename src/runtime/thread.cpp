@@ -21,7 +21,10 @@ Author: Leonardo de Moura
 #include "runtime/stack_overflow.h"
 
 #ifndef LEAN_DEFAULT_THREAD_STACK_SIZE
-#ifdef LEAN_EMSCRIPTEN
+// Gate on pointer width, not just Emscripten: a 1GB thread stack cannot be
+// reserved in a native 32-bit address space (e.g. the stage0 of the wasm
+// cross-build), making every pthread_create fail.
+#if defined(LEAN_EMSCRIPTEN) || UINTPTR_MAX == UINT32_MAX
 #define LEAN_DEFAULT_THREAD_STACK_SIZE 8*1024*1024 // 8MB for 32-bit
 #else
 #define LEAN_DEFAULT_THREAD_STACK_SIZE 1024*1024*1024 // 1GB for 64-bit
