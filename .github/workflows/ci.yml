@@ -3,6 +3,7 @@ on:
   push:
     branches:
       - 'master'
+      - 'reinstate-wasm'
     tags:
       - '*'
   pull_request:
