@@ -1,5 +1,6 @@
 import Lean.Data.Lsp
 import Lean.Elab.Import
+open IO.FS.Stream.Internal
 open Lean
 open Lean.Lsp
 open Lean.JsonRpc
@@ -83,8 +84,8 @@ def main (args : List String) : IO Unit := do
       lastRSS? := some rss
 
     let avgRSSDelta := totalRSSDelta / (n - 2)
-    IO.println s!"avg-reelab-rss-delta: {avgRSSDelta}"
+    IO.println s!"measurement: avg-reelab-rss-delta {avgRSSDelta*1024} b"
 
     let _ ← Ipc.collectDiagnostics requestNo uri versionNo
-    (← Ipc.stdin).writeLspMessage (Message.notification "exit" none)
+    writeLspMessage (← Ipc.stdin) (Message.notification "exit" none)
     discard <| Ipc.waitForExit

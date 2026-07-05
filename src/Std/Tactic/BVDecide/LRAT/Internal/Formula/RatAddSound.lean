@@ -7,6 +7,10 @@ module
 
 prelude
 public import Std.Tactic.BVDecide.LRAT.Internal.Formula.RatAddResult
+import Init.ByCases
+import Init.Data.Array.Range
+import Init.Data.Int.OfNat
+import Init.Data.Nat.Linear
 
 @[expose] public section
 
@@ -39,7 +43,6 @@ theorem mem_of_necessary_assignment {n : Nat} {p : (PosFin n) → Bool} {c : Def
     next hne => simp [h] at pv
   · specialize p'_not_entails_c v
     have h := p'_not_entails_c.2 v_in_c
-    simp only at h
     split at h
     next heq => simp [Literal.negate, ← heq, h, v_in_c]
     next hne => simp [h] at pv
@@ -171,7 +174,6 @@ theorem assignmentsInvariant_insertRatUnits {n : Nat} (f : DefaultFormula n)
       · rfl
     have hp1 := hp j1_unit ((Or.inr ∘ Or.inr) j1_unit_in_insertRatUnits_res)
     have hp2 := hp j2_unit ((Or.inr ∘ Or.inr) j2_unit_in_insertRatUnits_res)
-    simp only at hp1 hp2
     rcases hp1 with ⟨i1, hp1⟩
     rcases hp2 with ⟨i2, hp2⟩
     simp only [Fin.getElem_fin] at h1 h2
@@ -420,10 +422,10 @@ theorem existsRatHint_of_ratHintsExhaustive {n : Nat} (f : DefaultFormula n)
     rw [Array.mem_filter]
     constructor
     · grind
-    · rw [Array.getElem_toList] at c'_in_f
-      simp only [Array.getElem_range, getElem!_def, i_lt_f_clauses_size, Array.getElem?_eq_getElem,
-        c'_in_f, contains_iff]
-      simpa [Clause.toList] using negPivot_in_c'
+    · split
+      · grind
+      · simp [Clause.toList] at negPivot_in_c'
+        grind [contains_iff]
   rcases List.get_of_mem h with ⟨j, h'⟩
   have j_in_bounds : j < ratHints.size := by
     have j_property := j.2
