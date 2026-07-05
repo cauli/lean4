@@ -206,6 +206,15 @@ jobs:
             export NODE_OPTIONS="--max-old-space-size=8192"
           fi
           time make -C build $TARGET_STAGE -j$NPROC
+      - name: Dump wasm link configuration on failure
+        if: failure() && matrix.wasm
+        run: |
+          echo "=== build/stage0/leanc.sh ==="
+          cat build/stage0/leanc.sh || true
+          echo "=== bin/lean link rule from build/stage0/stdlib.make ==="
+          grep -B2 -A4 'bin/lean\$' build/stage0/stdlib.make || true
+          echo "=== which linkers exist ==="
+          command -v lld ld.lld ld || true
       # Should be done as early as possible and in particular *before* "Check rebootstrap" which
       # changes the state of stage1/
       - name: Save Cache
