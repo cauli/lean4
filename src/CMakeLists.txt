@@ -1115,19 +1115,20 @@ string(REPLACE "ROOT" "${CMAKE_BINARY_DIR}" LEANC_INTERNAL_FLAGS "${LEANC_INTERN
 string(REPLACE "ROOT" "${CMAKE_BINARY_DIR}" LEANC_INTERNAL_LINKER_FLAGS "${LEANC_INTERNAL_LINKER_FLAGS}")
 
 toml_escape("${LEAN_EXTRA_OPTS}" LEAN_EXTRA_OPTS_TOML)
-toml_escape("${LEANC_INTERNAL_FLAGS} ${LEANC_INTERNAL_LINKER_FLAGS}" LEAN_MORE_LEANC_ARGS_TOML)
+# For Emscripten cross-compilation, Lake needs to know the extra compiler flags
+# since it gets its default flags from the lean binary (which is from the
+# previous stage). Folded into `moreLeancArgs` here because the template
+# already defines that key and TOML forbids redefining it.
+set(LAKE_MORE_LEANC_FLAGS "${LEANC_INTERNAL_FLAGS} ${LEANC_INTERNAL_LINKER_FLAGS}")
+if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
+  string(APPEND LAKE_MORE_LEANC_FLAGS " ${EMSCRIPTEN_SETTINGS}")
+endif()
+toml_escape("${LAKE_MORE_LEANC_FLAGS}" LEAN_MORE_LEANC_ARGS_TOML)
 
 if(CMAKE_BUILD_TYPE MATCHES "Debug|Release|RelWithDebInfo|MinSizeRel")
   set(CMAKE_BUILD_TYPE_TOML "${CMAKE_BUILD_TYPE}")
 else()
   set(CMAKE_BUILD_TYPE_TOML "Release")
-endif()
-
-# For Emscripten cross-compilation, Lake needs to know the extra compiler flags
-# since it gets its default flags from the lean binary (which is from the previous stage).
-if(${CMAKE_SYSTEM_NAME} MATCHES "Emscripten")
-  toml_escape("${EMSCRIPTEN_SETTINGS}" EMSCRIPTEN_SETTINGS_TOML)
-  set(LEAN_EXTRA_LAKEFILE_TOML "moreLeancArgs = [${EMSCRIPTEN_SETTINGS_TOML}]")
 endif()
 
 if(USE_LAKE)
