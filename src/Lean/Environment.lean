@@ -22,6 +22,7 @@ public import Lean.PrivateName
 public import Lean.LoadDynlib
 public import Lean.CompactedRegion
 public import Init.Dynamic
+import Init.System.Platform
 import Init.Data.Slice
 import Init.Data.String.TakeDrop
 import Init.Data.Range.Polymorphic.Iterators
@@ -2197,9 +2198,6 @@ where
         needsData
       else
         needsData && (i.isExported || importAll)
-      -- Debug problematic module
-      if i.module.toString.contains "String.Lemmas.Basic" then
-        IO.println s!"[DEBUG:GO] {i.module}: needsData={needsData}, importAll={importAll}, isExported={isExported}"
       -- `B ≥ privateAll`?
       let importAll := globalLevel == .private || importAll && i.importAll
       -- `B ≥ public`?
