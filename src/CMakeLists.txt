@@ -864,9 +864,12 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
   # We set `ERROR_ON_UNDEFINED_SYMBOLS=0` because our build of LibUV does not
   # define all symbols, see the comment about LibUV on WebAssembly further up
   # in this file.
+  # STACK_SIZE: without pthreads all of Lean runs on the main wasm stack, and
+  # Emscripten's 64KB default overflows during the first olean import (the
+  # pthread build ran elaboration on 8MB worker-thread stacks instead).
   string(
     APPEND LEAN_EXE_LINKER_FLAGS
-    " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} -lnodefs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=1 -s LINKABLE=1 -s EXPORT_ALL=1 -s ERROR_ON_UNDEFINED_SYMBOLS=0"
+    " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} -lnodefs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=1 -s LINKABLE=1 -s EXPORT_ALL=1 -s ERROR_ON_UNDEFINED_SYMBOLS=0 -s STACK_SIZE=16777216"
   )
 endif()
 
