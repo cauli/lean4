@@ -112,6 +112,15 @@ option(USE_GMP "USE_GMP" ON)
 option(USE_MIMALLOC "use mimalloc" ON)
 set(LEAN_MI_SECURE 0 CACHE STRING "Configure mimalloc memory safety mitigations (https://github.com/microsoft/mimalloc/blob/v2.2.7/include/mimalloc/types.h#L56-L60)")
 
+# mimalloc's OS layer can't grow memory under Emscripten: mi_malloc_small
+# returns null once its initial reserve is exhausted (even a 24-byte request
+# fails with GBs of wasm heap free), aborting olean import via
+# lean_internal_panic_out_of_memory. Fall back to Emscripten's own allocator,
+# which grows the wasm memory correctly (ALLOW_MEMORY_GROWTH).
+if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
+  set(USE_MIMALLOC OFF)
+endif()
+
 # development-specific options
 option(CHECK_OLEAN_VERSION "Only load .olean files compiled with the current version of Lean" OFF)
 option(USE_LAKE "Use Lake instead of lean.mk for building core libs from language server" ON)
