@@ -34,7 +34,12 @@ RUN dpkg --add-architecture i386 && \
     libuv1-dev:i386 \
     pkg-config:i386 \
     libc6-dev:i386 \
+    libssl-dev:i386 \
+    python3-pip \
     && rm -rf /var/lib/apt/lists/*
+
+# Ubuntu 22.04 ships CMake 3.22; current Lean CMakeLists uses block() (>=3.25).
+RUN pip3 install --no-cache-dir 'cmake>=3.28'
 
 # Install Emscripten SDK
 ENV EMSDK=/opt/emsdk

@@ -189,9 +189,10 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
   option(EMSCRIPTEN_DEBUG "Enable debug-friendly WASM build with readable function names" OFF)
   if(EMSCRIPTEN_DEBUG)
     message(STATUS "Emscripten debug mode: enabling readable function names and assertions")
-    # --profiling-funcs keeps function names without full debug info
-    # -g3 adds full debug info (optional, can use -g for less)
-    string(APPEND EMSCRIPTEN_SETTINGS " --profiling-funcs -g3")
+    # --profiling-funcs keeps a name section (accurate, non-folded stack traces)
+    # without the size blow-up of -g3; -sASSERTIONS=1 surfaces real abort/OOM
+    # messages instead of a bare `unreachable`.
+    string(APPEND EMSCRIPTEN_SETTINGS " --profiling-funcs -sASSERTIONS=1")
   endif()
 
   string(APPEND LEANC_EXTRA_CC_FLAGS " -D LEAN_EMSCRIPTEN ${EMSCRIPTEN_SETTINGS}")
