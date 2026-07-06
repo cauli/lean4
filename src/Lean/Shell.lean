@@ -67,7 +67,18 @@ def getOrCreateWasmEnv : IO Environment := do
     IO.eprintln "[WASM DEBUG] getOrCreateWasmEnv: returning cached env"
     return env
   IO.eprintln "[WASM DEBUG] getOrCreateWasmEnv: cache miss, importing Init modules..."
+  -- Mirror the frontend's header import (`processHeaderCore`, Elab/Import.lean):
+  --  * `loadExts := true` loads the environment extensions — parser notation
+  --    (e.g. `+`) and the instance database (e.g. `OfNat`). Without it (the
+  --    default `false`), `#check 2 + 2` fails with "OfNat" / "unexpected '+'".
+  --  * `level := .exported` matches the only data the WASM build ships (base
+  --    `.olean`); the default `.private` expects absent private/server data.
+  --  * `leakEnv := true` keeps the compacted regions alive. The env is cached
+  --    and reused across compiles; with the default (regions freed after
+  --    import) the second compile dereferences freed regions and fails. Freeing
+  --    is also unsafe once extensions are loaded (see `withImportModules`).
   let env ← importModules #[{ module := `Init }] {} 0
+    (level := .exported) (loadExts := true) (leakEnv := true)
   IO.eprintln "[WASM DEBUG] getOrCreateWasmEnv: importModules completed"
   wasmEnvCache.set (some env)
   IO.eprintln "[WASM DEBUG] getOrCreateWasmEnv: environment cached"
@@ -95,21 +106,33 @@ def wasmCompile (code : String) (fileName : String := "<input>") : IO UInt32 := 
   let inputCtx := Parser.mkInputContext code fileName
   IO.eprintln "[WASM DEBUG] Input context created"
 
-  IO.eprintln "[WASM DEBUG] Setting up options..."
   let opts : Options := {}
-  let opts := Lean.internal.cmdlineSnapshots.setIfNotSet opts true
-  IO.eprintln "[WASM DEBUG] Options ready"
-
-  IO.eprintln "[WASM DEBUG] Creating command state..."
   let cmdState := Elab.Command.mkState env {} opts
-  IO.eprintln "[WASM DEBUG] Command state created"
 
-  IO.eprintln "[WASM DEBUG] Starting processCommands..."
-  let s ← Elab.IO.processCommands inputCtx { : Parser.ModuleParserState } cmdState
-  IO.eprintln "[WASM DEBUG] processCommands completed"
+  -- Elaborate synchronously with `Frontend.processCommands` — a plain loop over
+  -- `Command.elabCommandTopLevel` — rather than `Elab.IO.processCommands`. The
+  -- latter drives elaboration through the language-server snapshot/task
+  -- infrastructure, which spawns elaboration tasks. In the single-threaded WASM
+  -- worker those tasks are never drained, leaving the runtime in a state where
+  -- the *next* `lean_wasm_compile` call fails immediately. The synchronous loop
+  -- creates no tasks, so the cached environment stays reusable across compiles.
+  let frontendCtx : Elab.Frontend.Context := { inputCtx }
+  let frontendState : Elab.Frontend.State :=
+    { commandState := cmdState, parserState := {}, cmdPos := 0 }
+  -- `Command.elabCommandTopLevel` resets `commandState.messages` at the start of
+  -- every command, so the final state holds only the last command's messages.
+  -- Collect the log after each command instead of reading the end state.
+  let collect : Elab.Frontend.FrontendM MessageLog := do
+    let mut acc : MessageLog := {}
+    let mut done := false
+    while !done do
+      done := (← Elab.Frontend.processCommand)
+      acc := acc ++ (← Elab.Frontend.getCommandState).messages
+    return acc
+  let (msgLog, _s) ← StateRefT'.run (ReaderT.run collect frontendCtx) frontendState
 
   -- Output messages as JSON
-  let messages := s.commandState.messages.toList
+  let messages := msgLog.toList
   IO.eprintln s!"[WASM DEBUG] Processing {messages.length} messages..."
   for msg in messages do
     -- Convert to interactive diagnostic, then to plain diagnostic for JSON
