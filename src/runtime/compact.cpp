@@ -8,6 +8,7 @@ Author: Leonardo de Moura
 #include <string>
 #include <vector>
 #include <cstring>
+#include <cstdio>
 #include <lean/lean.h>
 #include "runtime/hash.h"
 #include "runtime/compact.h"
@@ -536,6 +537,10 @@ inline object * region_reader::fix_object_ptr(object * o) {
             return reinterpret_cast<object*>(static_cast<char*>(dep.begin) + (addr - dep_base));
         }
     }
+    // WASM-DIAG: characterize the unresolvable pointer before trapping.
+    fprintf(stderr, "[FIXPTR-FAIL] addr=0x%zx self=[0x%zx,0x%zx) size=%zu deps=%zu walked=%zu\n",
+            addr, self_base, self_base + m_size, m_size, m_dep_regions.size(),
+            (size_t)(reinterpret_cast<char*>(m_next) - reinterpret_cast<char*>(m_begin)));
     lean_unreachable();
 }
 
