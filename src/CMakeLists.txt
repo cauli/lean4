@@ -173,9 +173,12 @@ if(CHECK_OLEAN_VERSION MATCHES "ON")
 endif()
 
 if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
-  # Disable multi-threading for WASM (no pthread support; see runtime/thread.h stubs)
-  set(MULTI_THREAD OFF)
-
+  # Build with Emscripten pthreads. The single-threaded WASM build OOMs during the
+  # `Init` olean import (upstream's async-const realization accumulates unboundedly
+  # with no worker threads to drain it); the pthread build — like the native and the
+  # older 4.28 WASM builds — drains that work on real worker threads. Requires
+  # cross-origin isolation (COOP/COEP) in the browser for SharedArrayBuffer.
+  #
   # TODO(WN): code size/performance tradeoffs
   # - we're using -O3; it's /okay/
   # - -Oz produces quite slow code
@@ -190,7 +193,7 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
   # potentially-throwing call through a JS invoke_* trampoline. Lean's
   # runtime is exception-heavy, so the emulated mode dominated profiles of
   # olean import loading in the browser.
-  set(EMSCRIPTEN_SETTINGS "-sALLOW_MEMORY_GROWTH=1 -fwasm-exceptions -mtail-call")
+  set(EMSCRIPTEN_SETTINGS "-sALLOW_MEMORY_GROWTH=1 -fwasm-exceptions -mtail-call -pthread")
 
   # EMSCRIPTEN_DEBUG: Enable readable function names and assertions for debugging
   # This makes the WASM larger and slower but shows actual function names in stack traces
@@ -874,12 +877,13 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
   # We set `ERROR_ON_UNDEFINED_SYMBOLS=0` because our build of LibUV does not
   # define all symbols, see the comment about LibUV on WebAssembly further up
   # in this file.
-  # STACK_SIZE: without pthreads all of Lean runs on the main wasm stack, and
-  # Emscripten's 64KB default overflows during the first olean import (the
-  # pthread build ran elaboration on 8MB worker-thread stacks instead).
+  # PTHREAD_POOL_SIZE pre-spawns worker threads so Lean can create threads without
+  # the main thread blocking (Emscripten can't spawn a worker synchronously); 4
+  # matched the working 4.28 build. STACK_SIZE=16MB covers whatever import work
+  # still runs on the main wasm stack (Emscripten's 64KB default overflows it).
   string(
     APPEND LEAN_EXE_LINKER_FLAGS
-    " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} -lnodefs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=1 -s LINKABLE=1 -s EXPORT_ALL=1 -s ERROR_ON_UNDEFINED_SYMBOLS=0 -s STACK_SIZE=16777216"
+    " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} -lnodefs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=1 -s LINKABLE=1 -s EXPORT_ALL=1 -s ERROR_ON_UNDEFINED_SYMBOLS=0 -s STACK_SIZE=16777216 -sPTHREAD_POOL_SIZE=4"
   )
 endif()
 
