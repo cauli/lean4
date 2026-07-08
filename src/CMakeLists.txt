@@ -193,9 +193,11 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
   # potentially-throwing call through a JS invoke_* trampoline. Lean's
   # runtime is exception-heavy, so the emulated mode dominated profiles of
   # olean import loading in the browser.
-  # No -flto: it OOMs the CI runner during the LTO link. No -mtail-call either
-  # (this build tests whether that fork-added flag causes the Init-import trap).
-  set(EMSCRIPTEN_SETTINGS "-sALLOW_MEMORY_GROWTH=1 -fwasm-exceptions -pthread")
+  # No -flto: it OOMs the CI runner during the LTO link, so -mtail-call stands in
+  # as the codegen optimization. MAXIMUM_MEMORY=4GB (up from the 2GB default) tests
+  # whether the Init-import allocation is bounded-but-large or truly unbounded;
+  # shared-memory growth doesn't engage here, so the worker reserves it up front.
+  set(EMSCRIPTEN_SETTINGS "-sALLOW_MEMORY_GROWTH=1 -fwasm-exceptions -pthread -mtail-call")
 
   # EMSCRIPTEN_DEBUG: Enable readable function names and assertions for debugging
   # This makes the WASM larger and slower but shows actual function names in stack traces
@@ -884,11 +886,13 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
   # matched the working 4.28 build. STACK_SIZE=16MB covers whatever import work
   # still runs on the main wasm stack (Emscripten's 64KB default overflows it).
   # INITIAL_MEMORY must exceed static data + the 16MB stack + per-thread TLS; the
-  # pthread layout needs ~22MB up front (the default 16MB fails to link). Memory
-  # still grows from here, so this only sets the starting size.
+  # pthread layout needs ~22MB up front (the default 16MB fails to link). Shared
+  # memory does NOT grow here (the browser's SharedArrayBuffer isn't resizable in
+  # this config), so the worker reserves the real size up front; MAXIMUM_MEMORY=4GB
+  # raises the wasm32 ceiling from 2GB so we can test whether the import fits.
   string(
     APPEND LEAN_EXE_LINKER_FLAGS
-    " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} -lnodefs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=1 -s LINKABLE=1 -s EXPORT_ALL=1 -s ERROR_ON_UNDEFINED_SYMBOLS=0 -s STACK_SIZE=16777216 -sINITIAL_MEMORY=67108864 -sPTHREAD_POOL_SIZE=4"
+    " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} -lnodefs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=1 -s LINKABLE=1 -s EXPORT_ALL=1 -s ERROR_ON_UNDEFINED_SYMBOLS=0 -s STACK_SIZE=16777216 -sINITIAL_MEMORY=67108864 -sMAXIMUM_MEMORY=4294967296 -sPTHREAD_POOL_SIZE=4"
   )
 endif()
 
