@@ -541,7 +541,6 @@ inline object * region_reader::fix_object_ptr(object * o) {
     fprintf(stderr, "[FIXPTR-FAIL] addr=0x%zx self=[0x%zx,0x%zx) size=%zu deps=%zu walked=%zu\n",
             addr, self_base, self_base + m_size, m_size, m_dep_regions.size(),
             (size_t)(reinterpret_cast<char*>(m_next) - reinterpret_cast<char*>(m_begin)));
-    fflush(stderr);
     lean_unreachable();
 }
 
