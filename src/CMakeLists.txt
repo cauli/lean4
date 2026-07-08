@@ -881,9 +881,12 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
   # the main thread blocking (Emscripten can't spawn a worker synchronously); 4
   # matched the working 4.28 build. STACK_SIZE=16MB covers whatever import work
   # still runs on the main wasm stack (Emscripten's 64KB default overflows it).
+  # INITIAL_MEMORY must exceed static data + the 16MB stack + per-thread TLS; the
+  # pthread layout needs ~22MB up front (the default 16MB fails to link). Memory
+  # still grows from here, so this only sets the starting size.
   string(
     APPEND LEAN_EXE_LINKER_FLAGS
-    " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} -lnodefs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=1 -s LINKABLE=1 -s EXPORT_ALL=1 -s ERROR_ON_UNDEFINED_SYMBOLS=0 -s STACK_SIZE=16777216 -sPTHREAD_POOL_SIZE=4"
+    " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} -lnodefs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=1 -s LINKABLE=1 -s EXPORT_ALL=1 -s ERROR_ON_UNDEFINED_SYMBOLS=0 -s STACK_SIZE=16777216 -sINITIAL_MEMORY=67108864 -sPTHREAD_POOL_SIZE=4"
   )
 endif()
 
