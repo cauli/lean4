@@ -112,10 +112,14 @@ option(USE_GMP "USE_GMP" ON)
 option(USE_MIMALLOC "use mimalloc" ON)
 set(LEAN_MI_SECURE 0 CACHE STRING "Configure mimalloc memory safety mitigations (https://github.com/microsoft/mimalloc/blob/v2.2.7/include/mimalloc/types.h#L56-L60)")
 
-# Emscripten keeps mimalloc ON, matching upstream's own WASM config. (The
-# earlier `mi_malloc_small returns null` OOM was the single-threaded async-const
-# runaway exhausting the heap — which the pthread build drains — not a mimalloc
-# growth limit; mimalloc-off did not fix it either.)
+# mimalloc's OS layer can't grow memory under Emscripten: mi_malloc_small
+# returns null once its initial reserve is exhausted (even a 24-byte request
+# fails with GBs of wasm heap free), aborting olean import via
+# lean_internal_panic_out_of_memory. Fall back to Emscripten's own allocator,
+# which grows the wasm memory correctly (ALLOW_MEMORY_GROWTH).
+if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
+  set(USE_MIMALLOC OFF)
+endif()
 
 # development-specific options
 option(CHECK_OLEAN_VERSION "Only load .olean files compiled with the current version of Lean" OFF)
@@ -189,7 +193,9 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
   # potentially-throwing call through a JS invoke_* trampoline. Lean's
   # runtime is exception-heavy, so the emulated mode dominated profiles of
   # olean import loading in the browser.
-  set(EMSCRIPTEN_SETTINGS "-sALLOW_MEMORY_GROWTH=1 -fwasm-exceptions -pthread -flto")
+  # No -flto: it OOMs the CI runner during the LTO link. No -mtail-call either
+  # (this build tests whether that fork-added flag causes the Init-import trap).
+  set(EMSCRIPTEN_SETTINGS "-sALLOW_MEMORY_GROWTH=1 -fwasm-exceptions -pthread")
 
   # EMSCRIPTEN_DEBUG: Enable readable function names and assertions for debugging
   # This makes the WASM larger and slower but shows actual function names in stack traces
