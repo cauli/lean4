@@ -57,31 +57,35 @@ These functions provide a WASM-friendly API that caches the environment
 between calls, avoiding the slow re-import of Init modules on each compile.
 -/
 
-/-- Cached environment for WASM reuse. Initialized on first compile. -/
-private initialize wasmEnvCache : IO.Ref (Option Environment) ← IO.mkRef none
+/-- Cache of import-set → environment. Each distinct set of header imports gets
+its own cached environment, so `import Std …` (or any imports) is slow only on
+its first compile and fast on every repeat, just like Init-only code. -/
+private initialize wasmEnvCache : IO.Ref (Array (Array Name × Environment)) ← IO.mkRef #[]
 
-/-- Get or create the cached WASM environment with Init imported. -/
-def getOrCreateWasmEnv : IO Environment := do
-  IO.eprintln "[WASM DEBUG] getOrCreateWasmEnv: checking cache..."
-  if let some env ← wasmEnvCache.get then
-    IO.eprintln "[WASM DEBUG] getOrCreateWasmEnv: returning cached env"
-    return env
-  IO.eprintln "[WASM DEBUG] getOrCreateWasmEnv: cache miss, importing Init modules..."
+/-- Get or create the cached WASM environment for the given header `imports`.
+The first compile with a given import set imports it (slow); later compiles with
+the same set reuse the cached environment (fast). -/
+def getOrCreateWasmEnvFor (imports : Array Import) : IO Environment := do
+  let key := imports.map (·.module)
+  for (k, env) in (← wasmEnvCache.get) do
+    if k == key then
+      IO.eprintln "[WASM DEBUG] getOrCreateWasmEnvFor: returning cached env"
+      return env
+  IO.eprintln s!"[WASM DEBUG] getOrCreateWasmEnvFor: cache miss, importing {key}…"
   -- Mirror the frontend's header import (`processHeaderCore`, Elab/Import.lean):
   --  * `loadExts := true` loads the environment extensions — parser notation
   --    (e.g. `+`) and the instance database (e.g. `OfNat`). Without it (the
   --    default `false`), `#check 2 + 2` fails with "OfNat" / "unexpected '+'".
   --  * `level := .exported` matches the only data the WASM build ships (base
   --    `.olean`); the default `.private` expects absent private/server data.
-  --  * `leakEnv := true` keeps the compacted regions alive. The env is cached
-  --    and reused across compiles; with the default (regions freed after
-  --    import) the second compile dereferences freed regions and fails. Freeing
-  --    is also unsafe once extensions are loaded (see `withImportModules`).
-  let env ← importModules #[{ module := `Init }] {} 0
+  --  * `leakEnv := true` keeps the compacted regions alive. Environments are
+  --    cached and reused across compiles; with the default (regions freed after
+  --    import) a later compile dereferences freed regions and fails. Freeing is
+  --    also unsafe once extensions are loaded (see `withImportModules`).
+  let env ← importModules imports {} 0
     (level := .exported) (loadExts := true) (leakEnv := true)
-  IO.eprintln "[WASM DEBUG] getOrCreateWasmEnv: importModules completed"
-  wasmEnvCache.set (some env)
-  IO.eprintln "[WASM DEBUG] getOrCreateWasmEnv: environment cached"
+  IO.eprintln "[WASM DEBUG] getOrCreateWasmEnvFor: importModules completed"
+  wasmEnvCache.modify (·.push (key, env))
   return env
 
 /--
@@ -98,16 +102,20 @@ Returns 0 on success, 1 on error. Output is written to stdout as JSON.
 @[export lean_wasm_compile]
 def wasmCompile (code : String) (fileName : String := "<input>") : IO UInt32 := do
   IO.eprintln s!"[WASM DEBUG] wasmCompile called with code length={code.length}, fileName={fileName}"
-  IO.eprintln "[WASM DEBUG] Getting or creating environment..."
-  let env ← getOrCreateWasmEnv
-  IO.eprintln "[WASM DEBUG] Environment ready"
-
   IO.eprintln "[WASM DEBUG] Creating input context..."
   let inputCtx := Parser.mkInputContext code fileName
-  IO.eprintln "[WASM DEBUG] Input context created"
+  -- Parse the file's header (its `import` lines) and import that closure into a
+  -- per-import-set cached environment, then elaborate the body against it. This
+  -- is what lets user code `import Std …` (or any modules) work and stay fast on
+  -- repeat. `headerToImports` includes `Init` implicitly unless the file is
+  -- `prelude`, matching the normal frontend.
+  let (header, parserState, headerMessages) ← Parser.parseHeader inputCtx
+  IO.eprintln "[WASM DEBUG] Getting or creating environment for header imports..."
+  let env ← getOrCreateWasmEnvFor (Elab.headerToImports header)
+  IO.eprintln "[WASM DEBUG] Environment ready"
 
   let opts : Options := {}
-  let cmdState := Elab.Command.mkState env {} opts
+  let cmdState := Elab.Command.mkState env headerMessages opts
 
   -- Elaborate synchronously with `Frontend.processCommands` — a plain loop over
   -- `Command.elabCommandTopLevel` — rather than `Elab.IO.processCommands`. The
@@ -117,13 +125,16 @@ def wasmCompile (code : String) (fileName : String := "<input>") : IO UInt32 := 
   -- the *next* `lean_wasm_compile` call fails immediately. The synchronous loop
   -- creates no tasks, so the cached environment stays reusable across compiles.
   let frontendCtx : Elab.Frontend.Context := { inputCtx }
+  -- Start parsing commands right after the header, so the header's `import` lines
+  -- are not re-parsed as commands (they aren't commands and would error).
   let frontendState : Elab.Frontend.State :=
-    { commandState := cmdState, parserState := {}, cmdPos := 0 }
+    { commandState := cmdState, parserState := parserState, cmdPos := parserState.pos }
   -- `Command.elabCommandTopLevel` resets `commandState.messages` at the start of
   -- every command, so the final state holds only the last command's messages.
-  -- Collect the log after each command instead of reading the end state.
+  -- Collect the log after each command instead of reading the end state; seed it
+  -- with any header (import) parse errors.
   let collect : Elab.Frontend.FrontendM MessageLog := do
-    let mut acc : MessageLog := {}
+    let mut acc : MessageLog := headerMessages
     let mut done := false
     while !done do
       done := (← Elab.Frontend.processCommand)
@@ -166,7 +177,7 @@ Call this if you need to re-import modules (e.g., after changing search paths).
 -/
 @[export lean_wasm_reset]
 def wasmReset : IO Unit := do
-  wasmEnvCache.set none
+  wasmEnvCache.set #[]
   IO.println "[WASM] Environment cache cleared"
 
 /-- Whether Lean was built with an address sanitizer enabled. -/

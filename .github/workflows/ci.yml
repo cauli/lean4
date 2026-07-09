@@ -3,6 +3,7 @@ on:
   push:
     branches:
       - 'master'
+      - 'wasm-resident-imports'
     tags:
       - '*'
   pull_request:
