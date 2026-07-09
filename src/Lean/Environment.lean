@@ -2089,9 +2089,12 @@ where
       -- `B ≥ public`?
       let isExported := isExported && i.isExported
       let needsIRTrans := needsIRTrans || needsData && i.isMeta
-      -- In Emscripten, skip IR loading entirely (too large for browser)
+      -- In Emscripten we ship a separate small `.ir` part per module (see the
+      -- measured sizes: ~17% of the `.olean` closure). Load it wherever we load
+      -- data so the interpreter can `#eval` library code; the exported `.olean`
+      -- alone carries no compiled bodies.
       let needsIR := if System.Platform.isEmscripten then
-        false
+        needsData
       else
         needsIRTrans || importAll || globalLevel > .exported
       if !needsData && !needsIR then
@@ -2115,8 +2118,7 @@ where
         let needsIR := needsIRTrans || importAll
         let irPhases := if irPhases == mod.irPhases then irPhases else .all
         let parts ← if needsData && mod.parts.isEmpty then loadData i else pure mod.parts
-        -- In Emscripten, skip IR loading
-        let irData? ← if needsIR && mod.irData?.isNone && !System.Platform.isEmscripten then loadIR? i else pure mod.irData?
+        let irData? ← if needsIR && mod.irData?.isNone then loadIR? i else pure mod.irData?
         if importAll != mod.importAll || isExported != mod.isExported ||
             needsIRTrans != mod.needsIRTrans || needsData != mod.needsData || irPhases != mod.irPhases then
           modify fun s => { s with moduleNameMap := s.moduleNameMap.insert i.module { mod with
@@ -2127,8 +2129,7 @@ where
 
       -- newly discovered module
       let parts ← if needsData then loadData i else pure #[]
-      -- In Emscripten, skip IR loading
-      let irData? ← if needsIR && !System.Platform.isEmscripten then loadIR? i else pure none
+      let irData? ← if needsIR then loadIR? i else pure none
       let mod := { i with importAll, isExported, irPhases, parts, irData?, needsIRTrans, needsData }
       goRec mod
       modify fun s => { s with
@@ -2224,18 +2225,23 @@ def finalizeImport (s : ImportState) (imports : Array Import) (opts : Options) (
     let some data := mod.mainModule? |
       throw <| IO.userError s!"missing data file for module {mod.module}"
     return data
-  -- In Emscripten, IR files are not available (too large for browser)
-  -- Return array of empty ModuleData to match modules.size
+  -- In Emscripten we load a separate `.ir` part per module (see `needsIR`
+  -- above). Feed its data directly — bypassing the level-based `interpData?`,
+  -- which at exported/runtime would return the IR-less `.olean` — so the
+  -- interpreter gets the compiled bodies. Modules without a `.ir` file (a
+  -- rare few) contribute empty data, matching `modules.size`.
   let irData ← if System.Platform.isEmscripten then
-    -- Create empty ModuleData for each module (same size as modules array)
-    pure <| modules.map fun _ => {
-      isModule := false
-      imports := #[]
-      constNames := #[]
-      constants := #[]
-      extraConstNames := #[]
-      entries := #[]
-    }
+    pure <| modules.map fun mod =>
+      match mod.irData? with
+      | some (data, _) => data
+      | none => {
+          isModule := false
+          imports := #[]
+          constNames := #[]
+          constants := #[]
+          extraConstNames := #[]
+          entries := #[]
+        }
   else
     modules.mapM fun mod => do
       let some data := mod.interpData? level |

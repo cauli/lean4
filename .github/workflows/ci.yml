@@ -4,6 +4,7 @@ on:
     branches:
       - 'master'
       - 'wasm-resident-imports'
+      - 'wasm-ir-eval'
     tags:
       - '*'
   pull_request:
