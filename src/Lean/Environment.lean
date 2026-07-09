@@ -2228,13 +2228,15 @@ def finalizeImport (s : ImportState) (imports : Array Import) (opts : Options) (
   -- In Emscripten we load a separate `.ir` part per module (see `needsIR`
   -- above). Feed its data directly — bypassing the level-based `interpData?`,
   -- which at exported/runtime would return the IR-less `.olean` — so the
-  -- interpreter gets the compiled bodies. Modules without a `.ir` file (a
-  -- rare few) contribute empty data, matching `modules.size`.
+  -- interpreter gets the compiled bodies. Legacy (non-module-system) modules
+  -- write no `.ir` file; their single self-contained `.olean` already carries
+  -- the IR, so fall back to `interpData?` (which resolves to it) rather than
+  -- to empty data, or `#eval` of their functions would silently lose IR.
   let irData ← if System.Platform.isEmscripten then
     pure <| modules.map fun mod =>
       match mod.irData? with
       | some (data, _) => data
-      | none => {
+      | none => (mod.interpData? level).getD {
           isModule := false
           imports := #[]
           constNames := #[]

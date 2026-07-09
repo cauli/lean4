@@ -362,6 +362,25 @@ jobs:
                   "build-timeout": 90,
                   // Just a few selected tests because wasm is slow
                   "CTEST_OPTIONS": "-R \"leantest_1007\\.lean|leantest_Format\\.lean|leanruntest\\_1037.lean|leanruntest_ac_rfl\\.lean|leanruntest_tempfile.lean\\.|leanruntest_libuv\\.lean\""
+              },
+              {
+                  "name": "Linux 32bit",
+                  "os": "ubuntu-latest",
+                  // A fully NATIVE i386 toolchain (lean + lake + 32-bit stdlib oleans) from the
+                  // same commit as the Web Assembly build. 32-bit oleans are pointer-width
+                  // compatible with wasm32 (the wasm artifact's own oleans are already produced
+                  // by its native-i386 stage0), so this toolchain elaborates external libraries
+                  // (Batteries, Aesop, eventually Mathlib) at native speed for the playground.
+                  // Flags mirror the Web Assembly job's stage0, applied to every stage.
+                  "CMAKE_OPTIONS": "-DCMAKE_C_COMPILER_WORKS=1 -DUSE_GMP=OFF -DMMAP=OFF -DSTAGE0_USE_GMP=OFF -DSTAGE0_MMAP=OFF -DLEAN_EXTRA_CXX_FLAGS='-m32' -DLEANC_OPTS='-m32' -DSTAGE0_LEAN_EXTRA_CXX_FLAGS='-m32' -DSTAGE0_LEANC_OPTS='-m32' -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang -DSTAGE0_CMAKE_CXX_COMPILER=clang++ -DSTAGE0_CMAKE_C_COMPILER=clang -DCMAKE_LIBRARY_PATH=/usr/lib/i386-linux-gnu/ -DSTAGE0_CMAKE_LIBRARY_PATH=/usr/lib/i386-linux-gnu/ -DLEAN_INSTALL_SUFFIX=-linux_32",
+                  "cmultilib": true,
+                  "release": true,
+                  "enabled": true,
+                  "secondary": true,
+                  "shell": "bash -euxo pipefail {0}",
+                  "build-timeout": 90,
+                  // Same minimal test set as Web Assembly; upstream does not target i386.
+                  "CTEST_OPTIONS": "-R \"leantest_1007\\.lean|leantest_Format\\.lean|leanruntest\\_1037.lean|leanruntest_ac_rfl\\.lean|leanruntest_tempfile.lean\\.|leanruntest_libuv\\.lean\""
               }
             ];
             for (const job of matrix) {
