@@ -23,7 +23,8 @@ jobs:
         run: |
           sudo dpkg --add-architecture i386
           sudo apt-get update
-          sudo apt-get install -y libc6:i386 libstdc++6:i386 zlib1g:i386 libuv1:i386 zstd valgrind libc6-dbg:i386
+          # libssl3t64: 4.33 links libssl dynamically (4.28 did not)
+          sudo apt-get install -y libc6:i386 libstdc++6:i386 zlib1g:i386 libuv1:i386 libssl3t64:i386 zstd valgrind libc6-dbg:i386
       - name: Download toolchain artifact
         env:
           GH_TOKEN: ${{ github.token }}
@@ -34,7 +35,8 @@ jobs:
           tar --use-compress-program=unzstd -xf artifact/*.tar.zst
           TOOLCHAIN=$(echo lean-*-linux_32)
           echo "TOOLCHAIN=$PWD/$TOOLCHAIN" >> "$GITHUB_ENV"
-          "$TOOLCHAIN/bin/lean" --version
+          # tolerate the fork's nonzero --version exit (prints fine, exits 232)
+          "$TOOLCHAIN/bin/lean" --version || true
       - name: 'Probe 1: plain run, 3GB address-space cap, peak RSS'
         run: |
           echo "import ${{ inputs.import_target }}" > probe.lean
