@@ -39,8 +39,14 @@ jobs:
           tar --use-compress-program=unzstd -xf artifact/*.tar.zst
           TOOLCHAIN=$(echo lean-*-linux_32)
           echo "TOOLCHAIN=$PWD/$TOOLCHAIN" >> "$GITHUB_ENV"
+          # --version prints the commit; the triple in it is CMake's host triple,
+          # so check the actual ELF class — everything depends on 32-bit oleans.
           "$TOOLCHAIN/bin/lean" --version
-          "$TOOLCHAIN/bin/lean" --githash
+          file "$TOOLCHAIN/bin/lean" "$TOOLCHAIN/bin/lake"
+          if ! file "$TOOLCHAIN/bin/lean" | grep -q 'ELF 32-bit'; then
+            echo "::error::toolchain lean is not a 32-bit binary — its oleans would be 64-bit and useless for wasm32"
+            exit 1
+          fi
       - name: Checkout Batteries
         run: |
           git clone https://github.com/leanprover-community/batteries batteries
