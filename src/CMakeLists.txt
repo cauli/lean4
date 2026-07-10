@@ -199,7 +199,13 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
   # shared-memory growth doesn't engage here, so the worker reserves it up front.
   # INCOMING_MODULE_JS_API: emsdk 6 strictly validates Module keys supplied by
     # the embedder; the playground workers set all of these before load.
-    set(EMSCRIPTEN_SETTINGS "-sALLOW_MEMORY_GROWTH=1 -fwasm-exceptions -pthread -mtail-call -sINCOMING_MODULE_JS_API=print,printErr,setStatus,locateFile,mainScriptUrlOrBlob,INITIAL_MEMORY,wasmMemory,noInitialRun,preRun,onRuntimeInitialized,onAbort,arguments,ENV")
+    # Single-threaded again: on emsdk 6 the Init-import memory runaway that
+    # forced the pthread experiment shows signs of being gone, and emsdk 6's
+    # pthread pool workers crash at boot (growMemViews before the load
+    # handshake). No threads also means no SharedArrayBuffer, hence no
+    # COOP/COEP and a boot footprint small enough for phones.
+    set(MULTI_THREAD OFF)
+    set(EMSCRIPTEN_SETTINGS "-sALLOW_MEMORY_GROWTH=1 -fwasm-exceptions -mtail-call -sINCOMING_MODULE_JS_API=print,printErr,setStatus,locateFile,mainScriptUrlOrBlob,INITIAL_MEMORY,wasmMemory,noInitialRun,preRun,onRuntimeInitialized,onAbort,arguments,ENV")
 
   # EMSCRIPTEN_DEBUG: Enable readable function names and assertions for debugging
   # This makes the WASM larger and slower but shows actual function names in stack traces
@@ -898,7 +904,7 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
   # raises the wasm32 ceiling from 2GB so we can test whether the import fits.
   string(
     APPEND LEAN_EXE_LINKER_FLAGS
-    " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} -lnodefs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=1 -s LINKABLE=1 -s EXPORT_ALL=1 -s ERROR_ON_UNDEFINED_SYMBOLS=0 -s STACK_SIZE=16777216 -sINITIAL_MEMORY=67108864 -sMAXIMUM_MEMORY=4294967296 -sPTHREAD_POOL_SIZE=4"
+    " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} -lnodefs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=1 -s LINKABLE=1 -s EXPORT_ALL=1 -s ERROR_ON_UNDEFINED_SYMBOLS=0 -s STACK_SIZE=16777216 -sINITIAL_MEMORY=67108864 -sMAXIMUM_MEMORY=4294967296"
   )
 endif()
 
