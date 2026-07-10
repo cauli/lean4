@@ -197,7 +197,9 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
   # as the codegen optimization. MAXIMUM_MEMORY=4GB (up from the 2GB default) tests
   # whether the Init-import allocation is bounded-but-large or truly unbounded;
   # shared-memory growth doesn't engage here, so the worker reserves it up front.
-  set(EMSCRIPTEN_SETTINGS "-sALLOW_MEMORY_GROWTH=1 -fwasm-exceptions -pthread -mtail-call")
+  # INCOMING_MODULE_JS_API: emsdk 6 strictly validates Module keys supplied by
+    # the embedder; the playground workers set all of these before load.
+    set(EMSCRIPTEN_SETTINGS "-sALLOW_MEMORY_GROWTH=1 -fwasm-exceptions -pthread -mtail-call -sINCOMING_MODULE_JS_API=print,printErr,setStatus,locateFile,mainScriptUrlOrBlob,INITIAL_MEMORY,wasmMemory,noInitialRun,preRun,onRuntimeInitialized,onAbort,arguments,ENV")
 
   # EMSCRIPTEN_DEBUG: Enable readable function names and assertions for debugging
   # This makes the WASM larger and slower but shows actual function names in stack traces
