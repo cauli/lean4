@@ -39,10 +39,17 @@ jobs:
           tar --use-compress-program=unzstd -xf artifact/*.tar.zst
           TOOLCHAIN=$(echo lean-*-linux_32)
           echo "TOOLCHAIN=$PWD/$TOOLCHAIN" >> "$GITHUB_ENV"
-          # --version prints the commit; the triple in it is CMake's host triple,
-          # so check the actual ELF class — everything depends on 32-bit oleans.
+          ls -la "$TOOLCHAIN/bin"
+          file "$TOOLCHAIN"/bin/* 2>/dev/null | head
+          ldd "$TOOLCHAIN/bin/lean" 2>&1 | head -15
+          # lean --version exits non-zero here despite printing (exit 232 on
+          # both prior runs) — capture instead of dying so we can see why.
+          set +e
           "$TOOLCHAIN/bin/lean" --version
-          file "$TOOLCHAIN/bin/lean" "$TOOLCHAIN/bin/lake"
+          echo "lean --version exit code: $?"
+          set -e
+          # The triple in --version is CMake's host triple; the ELF class is
+          # the ground truth — everything depends on 32-bit oleans.
           if ! file "$TOOLCHAIN/bin/lean" | grep -q 'ELF 32-bit'; then
             echo "::error::toolchain lean is not a 32-bit binary — its oleans would be 64-bit and useless for wasm32"
             exit 1
