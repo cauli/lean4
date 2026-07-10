@@ -9,6 +9,12 @@ Author: Leonardo de Moura
 #include <vector>
 #include <cstring>
 #include <cstdio>
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#define WASM_DIAG(...) EM_ASM(__VA_ARGS__)
+#else
+#define WASM_DIAG(...)
+#endif
 #include <lean/lean.h>
 #include "runtime/hash.h"
 #include "runtime/compact.h"
@@ -538,10 +544,10 @@ inline object * region_reader::fix_object_ptr(object * o) {
         }
     }
     // WASM-DIAG: characterize the unresolvable pointer before trapping.
-    fprintf(stderr, "[FIXPTR-FAIL] addr=0x%zx self=[0x%zx,0x%zx) size=%zu deps=%zu walked=%zu\n",
-            addr, self_base, self_base + m_size, m_size, m_dep_regions.size(),
-            (size_t)(reinterpret_cast<char*>(m_next) - reinterpret_cast<char*>(m_begin)));
-    fflush(stderr);
+    WASM_DIAG({ err('[FIXPTR-FAIL] addr=0x' + ($0 >>> 0).toString(16) + ' self=[0x' + ($1 >>> 0).toString(16)
+        + ',0x' + ($2 >>> 0).toString(16) + ') deps=' + $3 + ' walked=' + ($4 >>> 0)); },
+        (int)addr, (int)self_base, (int)(self_base + m_size), (int)m_dep_regions.size(),
+        (int)(reinterpret_cast<char*>(m_next) - reinterpret_cast<char*>(m_begin)));
     lean_unreachable();
 }
 
@@ -619,6 +625,9 @@ void region_reader::fix_closure(object * o) {
 }
 
 object * region_reader::read() {
+    WASM_DIAG({ err('[WALK] enter begin=0x' + ($0 >>> 0).toString(16) + ' base=0x' + ($1 >>> 0).toString(16)
+        + ' size=' + ($2 >>> 0) + ' deps=' + $3); },
+        (int)(size_t)m_begin, (int)(size_t)m_base_addr, (int)m_size, (int)m_dep_regions.size());
     if (m_next == m_end)
         return nullptr; /* all objects have been read */
 
@@ -656,6 +665,7 @@ object * region_reader::read() {
             // pointer needs no fixup and the structural walk can be skipped entirely. This also
             // lets us avoid sorting and validating `m_dep_regions` (the dominant cost when chaining
             // many dep oleans into a single `region_reader`).
+            WASM_DIAG({ err('[WALK] fast path'); });
             object * root = *static_cast<object_offset *>(m_next);
             m_end = m_next;
             return root;
@@ -663,11 +673,17 @@ object * region_reader::read() {
     }
 
     // Slow path: dep-region fixup needed. Sort and validate dep regions now.
+    WASM_DIAG({ err('[WALK] slow path, validating deps'); });
     sort_and_validate_dep_regions();
+    WASM_DIAG({ err('[WALK] deps ok, fixing root'); });
     object * root = fix_object_ptr(*static_cast<object_offset *>(m_next));
     move(sizeof(object_offset));
+    size_t wasm_diag_count = 0;
 
     while (m_next < m_end) {
+        if ((++wasm_diag_count & 0xFFFFF) == 0)
+            WASM_DIAG({ err('[WALK] ' + ($0 >>> 0) + ' objects, offset ' + ($1 >>> 0)); },
+                (int)wasm_diag_count, (int)(reinterpret_cast<char*>(m_next) - reinterpret_cast<char*>(m_begin)));
         object * curr = reinterpret_cast<object*>(m_next);
         uint8 tag = lean_ptr_tag(curr);
         if (tag <= LeanMaxCtorTag) {
