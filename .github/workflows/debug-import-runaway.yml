@@ -22,7 +22,8 @@ jobs:
       - name: Install i386 runtime + valgrind
         run: |
           sudo dpkg --add-architecture i386
-          sudo apt-get update
+          # tolerate unrelated-repo flakes (e.g. packages.microsoft.com signature outages)
+          sudo apt-get update || true
           # libssl3t64: 4.33 links libssl dynamically (4.28 did not)
           sudo apt-get install -y libc6:i386 libstdc++6:i386 zlib1g:i386 libuv1:i386 libssl3t64:i386 zstd valgrind libc6-dbg:i386
       - name: Download toolchain artifact
