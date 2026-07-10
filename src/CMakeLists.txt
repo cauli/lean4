@@ -199,18 +199,16 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
   # shared-memory growth doesn't engage here, so the worker reserves it up front.
   # INCOMING_MODULE_JS_API: emsdk 6 strictly validates Module keys supplied by
     # the embedder; the playground workers set all of these before load.
-    # Single-threaded again: on emsdk 6 the Init-import memory runaway that
-    # forced the pthread experiment shows signs of being gone, and emsdk 6's
-    # pthread pool workers crash at boot (growMemViews before the load
-    # handshake). No threads also means no SharedArrayBuffer, hence no
-    # COOP/COEP and a boot footprint small enough for phones.
-    set(MULTI_THREAD OFF)
+    # Threads: 4.33's import machinery creates IO.Promises during env
+    # realization, and without LEAN_MULTI_THREAD the task manager is a no-op,
+    # so Promise.new panics by design. A single-thread (no COOP/COEP, phone-
+    # sized) build needs a sequential task manager upstream first.
     # JS-based EH: -fwasm-exceptions still miscompiles this tree on emsdk 6 —
     # the first compile traps `unreachable` inside readModuleDataPartsOfMod
     # (exception-heavy part-probing) in 10ms, silently, heap tiny, in both the
     # pthread and single-thread configs; the native i386 build of the same
     # sources is fine. Same class of bug 1aa6036d1f dodged on emcc 4.0.22.
-    set(EMSCRIPTEN_SETTINGS "-sALLOW_MEMORY_GROWTH=1 -sDISABLE_EXCEPTION_CATCHING=0 -sINCOMING_MODULE_JS_API=print,printErr,setStatus,locateFile,mainScriptUrlOrBlob,INITIAL_MEMORY,wasmMemory,noInitialRun,preRun,onRuntimeInitialized,onAbort,arguments,ENV")
+    set(EMSCRIPTEN_SETTINGS "-sALLOW_MEMORY_GROWTH=1 -sDISABLE_EXCEPTION_CATCHING=0 -pthread -sINCOMING_MODULE_JS_API=print,printErr,setStatus,locateFile,mainScriptUrlOrBlob,INITIAL_MEMORY,wasmMemory,noInitialRun,preRun,onRuntimeInitialized,onAbort,arguments,ENV")
 
   # EMSCRIPTEN_DEBUG: Enable readable function names and assertions for debugging
   # This makes the WASM larger and slower but shows actual function names in stack traces
@@ -909,7 +907,7 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
   # raises the wasm32 ceiling from 2GB so we can test whether the import fits.
   string(
     APPEND LEAN_EXE_LINKER_FLAGS
-    " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} -lnodefs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=1 -s LINKABLE=1 -s EXPORT_ALL=1 -s ERROR_ON_UNDEFINED_SYMBOLS=0 -s STACK_SIZE=16777216 -sINITIAL_MEMORY=67108864 -sMAXIMUM_MEMORY=4294967296"
+    " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} -lnodefs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=1 -s LINKABLE=1 -s EXPORT_ALL=1 -s ERROR_ON_UNDEFINED_SYMBOLS=0 -s STACK_SIZE=16777216 -sINITIAL_MEMORY=67108864 -sMAXIMUM_MEMORY=4294967296 -sPTHREAD_POOL_SIZE=4"
   )
 endif()
 
