@@ -210,7 +210,11 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
     # --profiling-funcs keeps a name section (accurate, non-folded stack traces)
     # without the size blow-up of -g3; -sASSERTIONS=1 surfaces real abort/OOM
     # messages instead of a bare `unreachable`.
-    string(APPEND EMSCRIPTEN_SETTINGS " --profiling-funcs -sASSERTIONS=1")
+    # ASSERTIONS=1 is broken on emsdk 6 pthread workers: the stack-cookie
+    # checks call growMemViews() before the load message delivers wasmMemory
+    # ("Cannot read properties of undefined (reading 'buffer')" at boot).
+    # Keep the name section for symbolizing traces.
+    string(APPEND EMSCRIPTEN_SETTINGS " --profiling-funcs")
   endif()
 
   string(APPEND LEANC_EXTRA_CC_FLAGS " -D LEAN_EMSCRIPTEN ${EMSCRIPTEN_SETTINGS}")
