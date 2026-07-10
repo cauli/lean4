@@ -265,6 +265,14 @@ jobs:
           build/stage0/bin/lake cache clean
           rm -rf build/stage1
           mv build/stage1.bak build/stage1
+      - name: Upload generated Environment.c (diagnostic)
+        if: matrix.name == 'Web Assembly' || matrix.name == 'Linux 32bit'
+        uses: actions/upload-artifact@v4
+        with:
+          name: envc-${{ matrix.name }}
+          path: |
+            build/**/Environment.c
+          if-no-files-found: warn
       - name: Install
         run: |
           # Increase Node.js heap size for Emscripten's acorn-optimizer when building WASM.
