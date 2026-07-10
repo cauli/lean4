@@ -425,10 +425,7 @@ jobs:
                   "wasm": true,
                   "cmultilib": true,
                   "release": true,
-                  // Disabled while the Init-import memory runaway is debugged via the native
-                  // i386 build below — the wasm artifact is unusable until that bug is fixed,
-                  // so skip its ~90min build on every push. Re-enable with the fix.
-                  "enabled": false,
+                  "enabled": true,
                   // Secondary until WASM builds become stable
                   "secondary": true,
                   "cross": true,
