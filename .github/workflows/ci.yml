@@ -425,13 +425,38 @@ jobs:
                   "wasm": true,
                   "cmultilib": true,
                   "release": true,
-                  "enabled": true,
+                  // Disabled while the Init-import memory runaway is debugged via the native
+                  // i386 build below — the wasm artifact is unusable until that bug is fixed,
+                  // so skip its ~90min build on every push. Re-enable with the fix.
+                  "enabled": false,
                   // Secondary until WASM builds become stable
                   "secondary": true,
                   "cross": true,
                   "shell": "bash -euxo pipefail {0}",
                   "build-timeout": 90,
                   // Just a few selected tests because wasm is slow
+                  "CTEST_OPTIONS": "-R \"leantest_1007\\.lean|leantest_Format\\.lean|leanruntest\\_1037.lean|leanruntest_ac_rfl\\.lean|leanruntest_tempfile.lean\\.|leanruntest_libuv\\.lean\""
+              },
+              {
+                  "name": "Linux 32bit",
+                  "os": "ubuntu-latest",
+                  // A fully NATIVE i386 build of this 4.33 tree, mirroring the wasm build's
+                  // config (no GMP/mimalloc/mmap, 32-bit pointers). Purpose: reproduce the
+                  // wasm Init-import memory runaway natively, where real tooling (gdb,
+                  // valgrind, heaptrack) works. The test step runs the built stage1 binary
+                  // on files that import Init, so this job alone answers whether the runaway
+                  // is 32-bit-generic (tests hang/OOM) or Emscripten-specific (tests pass).
+                  // -msse2/-mfpmath=sse: lean.h's FLT_EVAL_METHOD guard. LEANC_EXTRA_CC_FLAGS
+                  // and LEAN_EXTRA_LINKER_FLAGS repeat the arch on every leanc compile AND
+                  // link (leanc.sh's baked ldflags don't inherit compile flags).
+                  "CMAKE_OPTIONS": "-DCMAKE_C_COMPILER_WORKS=1 -DUSE_GMP=OFF -DMMAP=OFF -DUSE_MIMALLOC=OFF -DSTAGE0_USE_GMP=OFF -DSTAGE0_MMAP=OFF -DLEAN_EXTRA_CXX_FLAGS='-m32 -msse2 -mfpmath=sse' -DLEANC_OPTS='-m32 -msse2 -mfpmath=sse' -DLEANC_EXTRA_CC_FLAGS='-m32 -msse2 -mfpmath=sse' -DLEAN_EXTRA_LINKER_FLAGS='-m32' -DSTAGE0_LEAN_EXTRA_CXX_FLAGS='-m32 -msse2 -mfpmath=sse' -DSTAGE0_LEANC_OPTS='-m32 -msse2 -mfpmath=sse' -DSTAGE0_LEANC_EXTRA_CC_FLAGS='-m32 -msse2 -mfpmath=sse' -DSTAGE0_LEAN_EXTRA_LINKER_FLAGS='-m32' -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang -DSTAGE0_CMAKE_CXX_COMPILER=clang++ -DSTAGE0_CMAKE_C_COMPILER=clang -DCMAKE_LIBRARY_PATH=/usr/lib/i386-linux-gnu/ -DSTAGE0_CMAKE_LIBRARY_PATH=/usr/lib/i386-linux-gnu/ -DLEAN_INSTALL_SUFFIX=-linux_32",
+                  "cmultilib": true,
+                  "release": true,
+                  "enabled": true,
+                  "secondary": true,
+                  "shell": "bash -euxo pipefail {0}",
+                  "build-timeout": 90,
+                  // These run the BUILT stage1 binary on files importing Init — the repro signal.
                   "CTEST_OPTIONS": "-R \"leantest_1007\\.lean|leantest_Format\\.lean|leanruntest\\_1037.lean|leanruntest_ac_rfl\\.lean|leanruntest_tempfile.lean\\.|leanruntest_libuv\\.lean\""
               }
             ];
