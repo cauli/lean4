@@ -65,7 +65,9 @@ jobs:
         run: |
           export PATH="$TOOLCHAIN/bin:$PATH"
           cd batteries
-          lake build
+          # The library target only: the default set also links the runLinter
+          # executable, which we don't ship and which fails to link 32-bit.
+          lake build Batteries
       - name: Package oleans
         run: |
           cd batteries/.lake/build/lib
