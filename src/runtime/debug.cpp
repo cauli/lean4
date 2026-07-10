@@ -156,3 +156,14 @@ extern "C" LEAN_EXPORT void lean_notify_assert(const char * fileName, int line, 
     invoke_debugger();
 }
 }
+
+#ifdef LEAN_EMSCRIPTEN
+// Under MAIN_MODULE dynamic linking, libunwind references dl_iterate_phdr to
+// walk loaded modules for EH frame data; nothing provides it in the
+// Emscripten link, which leaves a required-but-unresolved GOT entry that
+// emsdk 6's loader crashes on (its undefined-symbol reporter dereferences
+// the missing binding). There are no modules to walk — report none.
+extern "C" LEAN_EXPORT int dl_iterate_phdr(int (*)(void *, unsigned long, void *), void *) {
+    return 0;
+}
+#endif

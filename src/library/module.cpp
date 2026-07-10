@@ -16,6 +16,7 @@ Authors: Leonardo de Moura, Gabriel Ebner, Sebastian Ullrich
 #include <sys/stat.h>
 #include <cerrno>
 #include <cstring>
+#include <cstdio>
 #include "runtime/thread.h"
 #include "runtime/interrupt.h"
 #include "runtime/sstream.h"
@@ -453,6 +454,8 @@ static object * mk_compacted_region(b_obj_arg ofname, object * root,
 // Supports both `v2` and `v3` formats.
 extern "C" LEAN_EXPORT object * lean_compacted_region_read(b_obj_arg ofname, b_obj_arg odep_regions, object *) {
     std::string olean_fn(lean_string_cstr(ofname));
+    // WASM-DIAG: prove the extern is entered at all, unbuffered.
+    fprintf(stderr, "[READ-ENTRY] %s\n", olean_fn.c_str()); fflush(stderr);
     try {
         std::vector<region_view> dep_regions = extract_dep_regions(odep_regions);
 #ifdef LEAN_WINDOWS
@@ -602,6 +605,12 @@ extern "C" LEAN_EXPORT object * lean_compacted_region_read(b_obj_arg ofname, b_o
             }
         }
 
+        // WASM-DIAG: trace every olean read (last line before a trap = failing module).
+        fprintf(stderr, "[READER] %s ver=%d base=0x%zx buf=0x%zx size=%zu mmap=%d dsz=%zu deps=%zu closoff=%zu relocs=%zu\n",
+                olean_fn.c_str(), (int)header.version, reinterpret_cast<size_t>(base_addr),
+                reinterpret_cast<size_t>(buffer), size, (int)is_mmap, data_section_sz,
+                dep_regions.size(), closure_offsets.size(), lib_relocs.size());
+        fflush(stderr);
         region_reader reader(
             data_section_sz, buffer + data_section_off,
             base_addr + data_section_off,
