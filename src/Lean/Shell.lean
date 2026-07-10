@@ -10,7 +10,9 @@ import Lean.Elab.Frontend
 import Lean.Elab.ParseImportsFast
 import Lean.Server.Watchdog
 import Lean.Server.FileWorker
-import Lean.Compiler.IR.EmitC
+import Lean.Compiler.LCNF.EmitC
+import Init.System.Platform
+import Lean.Compiler.Options
 
 /-  Lean companion to  `shell.cpp` -/
 
@@ -30,7 +32,7 @@ abort on files with invalid UTF-8.
 opaque decodeLossyUTF8 (a : @& ByteArray) : String
 
 /- Runs the `main` function of the module with `args` using the Lean interpreter. -/
-@[extern "lean_run_main"]
+@[extern "lean_eval_main"]
 opaque runMain (env : @& Environment) (opts : @& Options) (args : @& List String) : BaseIO UInt32
 
 /--
@@ -47,9 +49,100 @@ Before calling this function, the LLVM subsystem must first be successfully init
 @[extern "lean_emit_llvm"]
 opaque emitLLVM (env : Environment) (modName : Name) (filepath : FilePath) : IO Unit
 
-/-- Print all profiling times (if any) to standard error. -/
-@[extern "lean_display_cumulative_profiling_times"]
-opaque displayCumulativeProfilingTimes : BaseIO Unit
+/-! ## WASM API
+
+These functions provide a WASM-friendly API that caches the environment
+between calls, avoiding the slow re-import of Init modules on each compile.
+-/
+
+/-- Cached environment for WASM reuse. Initialized on first compile. -/
+private initialize wasmEnvCache : IO.Ref (Option Environment) ← IO.mkRef none
+
+/-- Get or create the cached WASM environment with Init imported. -/
+def getOrCreateWasmEnv : IO Environment := do
+  IO.eprintln "[WASM DEBUG] getOrCreateWasmEnv: checking cache..."
+  if let some env ← wasmEnvCache.get then
+    IO.eprintln "[WASM DEBUG] getOrCreateWasmEnv: returning cached env"
+    return env
+  IO.eprintln "[WASM DEBUG] getOrCreateWasmEnv: cache miss, importing Init modules..."
+  let env ← importModules #[{ module := `Init }] {} 0
+  IO.eprintln "[WASM DEBUG] getOrCreateWasmEnv: importModules completed"
+  wasmEnvCache.set (some env)
+  IO.eprintln "[WASM DEBUG] getOrCreateWasmEnv: environment cached"
+  return env
+
+/--
+Compile Lean code using a cached environment.
+
+This is the main WASM entry point. The first call will import Init modules (slow),
+but subsequent calls reuse the cached environment (fast).
+
+The `fileName` parameter is optional - it's only used as a label in error messages,
+not for actual file I/O. The `code` string is processed directly in memory.
+
+Returns 0 on success, 1 on error. Output is written to stdout as JSON.
+-/
+@[export lean_wasm_compile]
+def wasmCompile (code : String) (fileName : String := "<input>") : IO UInt32 := do
+  IO.eprintln s!"[WASM DEBUG] wasmCompile called with code length={code.length}, fileName={fileName}"
+  IO.eprintln "[WASM DEBUG] Getting or creating environment..."
+  let env ← getOrCreateWasmEnv
+  IO.eprintln "[WASM DEBUG] Environment ready"
+
+  IO.eprintln "[WASM DEBUG] Creating input context..."
+  let inputCtx := Parser.mkInputContext code fileName
+  IO.eprintln "[WASM DEBUG] Input context created"
+
+  IO.eprintln "[WASM DEBUG] Setting up options..."
+  let opts : Options := {}
+  let opts := Lean.internal.cmdlineSnapshots.setIfNotSet opts true
+  IO.eprintln "[WASM DEBUG] Options ready"
+
+  IO.eprintln "[WASM DEBUG] Creating command state..."
+  let cmdState := Elab.Command.mkState env {} opts
+  IO.eprintln "[WASM DEBUG] Command state created"
+
+  IO.eprintln "[WASM DEBUG] Starting processCommands..."
+  let s ← Elab.IO.processCommands inputCtx { : Parser.ModuleParserState } cmdState
+  IO.eprintln "[WASM DEBUG] processCommands completed"
+
+  -- Output messages as JSON
+  let messages := s.commandState.messages.toList
+  IO.eprintln s!"[WASM DEBUG] Processing {messages.length} messages..."
+  for msg in messages do
+    -- Convert to interactive diagnostic, then to plain diagnostic for JSON
+    let interactiveDiag ← Widget.msgToInteractiveDiagnostic inputCtx.fileMap msg false
+    let diag := interactiveDiag.toDiagnostic
+    -- Add extra fields for WASM consumers
+    let json := Json.mkObj [
+      ("fileName", Json.str msg.fileName),
+      ("pos", Json.mkObj [("line", msg.pos.line), ("column", msg.pos.column)]),
+      ("endPos", match msg.endPos with
+        | some p => Json.mkObj [("line", p.line), ("column", p.column)]
+        | none => Json.null),
+      ("severity", match msg.severity with
+        | .error => "error" | .warning => "warning" | .information => "information"),
+      ("caption", msg.caption),
+      ("data", diag.message),
+      ("isSilent", msg.isSilent),
+      ("keepFullRange", msg.keepFullRange),
+      ("kind", Json.str msg.kind.toString)
+    ]
+    IO.println json.compress
+
+  -- Return success/failure
+  let hasErrors := messages.any (·.severity == .error)
+  IO.eprintln s!"[WASM DEBUG] Done, hasErrors={hasErrors}"
+  return if hasErrors then 1 else 0
+
+/--
+Reset the WASM environment cache.
+Call this if you need to re-import modules (e.g., after changing search paths).
+-/
+@[export lean_wasm_reset]
+def wasmReset : IO Unit := do
+  wasmEnvCache.set none
+  IO.println "[WASM] Environment cache cleared"
 
 /-- Whether Lean was built with an address sanitizer enabled. -/
 @[extern "lean_internal_has_address_sanitizer"]
@@ -168,7 +261,7 @@ def displayHelp (useStderr : Bool) : IO Unit := do
     out.putStrLn  "  -s, --tstack=num       thread stack size in Kb"
     out.putStrLn  "      --server           start lean in server mode"
     out.putStrLn  "      --worker           start lean in server-worker mode"
-  out.putStrLn    "      --plugin=file      load and initialize Lean shared library for registering linters etc."
+  out.putStrLn    "      --plugin=file[=fn] load and initialize Lean shared library for registering linters etc."
   out.putStrLn    "      --load-dynlib=file load shared library to make its symbols available to the interpreter"
   out.putStrLn    "      --setup=file       JSON file with module setup data (supersedes the file's header)"
   out.putStrLn    "      --json             report Lean output (e.g., messages) as JSON (one per line)"
@@ -179,6 +272,10 @@ def displayHelp (useStderr : Bool) : IO Unit := do
   out.putStrLn    "      --print-libdir     print the installation directory for Lean's built-in libraries and exit"
   out.putStrLn    "      --profile          display elaboration/type checking time for each definition/theorem"
   out.putStrLn    "      --stats            display environment statistics"
+  out.putStrLn    "      --incr-save=file   EXPERIMENTAL: save a full incremental snapshot of post-elaboration state at end of run"
+  out.putStrLn    "      --incr-load=file   EXPERIMENTAL: reuse a snapshot saved by `--incr-(header-)save` at start of run"
+  out.putStrLn    "      --incr-header-save=file"
+  out.putStrLn    "                         EXPERIMENTAL: like `--incr-save`, but save only the header (state after importing)"
   if Internal.isDebug () then
     out.putStrLn  "      --debug=tag        enable assertions with the given tag"
   out.putStrLn    "      -D name=value      set a configuration option (see set_option command)"
@@ -217,14 +314,10 @@ opaque Internal.getBelieverTrustLevel (_ : Unit) : UInt32
 def defaultTrustLevel : UInt32 :=
   Internal.getBelieverTrustLevel () + 1
 
-/-- Returns the platform's native concurrency limit. -/
-@[extern "lean_internal_get_hardware_concurrency"]
-opaque Internal.getHardwareCurrency (_ : Unit) : UInt32
-
 /-- Returns the default number of threads for the shell's task manager. -/
 def defaultNumThreads : UInt32 :=
   if Internal.isMultiThread () then
-    Internal.getHardwareCurrency ()
+    Platform.Internal.getHardwareConcurrency ()
   else 0
 
 structure ShellOptions where
@@ -250,6 +343,9 @@ structure ShellOptions where
   errorOnKinds : Array Name := #[]
   printStats : Bool := false
   run : Bool := false
+  incrSaveFileName? : Option System.FilePath := none
+  incrLoadFileName? : Option System.FilePath := none
+  incrHeaderSaveFileName? : Option System.FilePath := none
 
 @[export lean_shell_options_mk]
 def mkShellOptions (_ : Unit) : ShellOptions := {}
@@ -284,7 +380,7 @@ def setConfigOption (opts : Options) (arg : String) : IO Options := do
     else
       -- More options may be registered by imports, so we leave validating them to the elaborator.
       -- This (minor) duplication may be resolved later.
-      return opts.insert name val
+      return opts.set name val
 
 /--
 Process a command-line option parsed by the C++ shell.
@@ -343,7 +439,10 @@ def ShellOptions.process (opts : ShellOptions)
   | 'I' => -- `-I, --stdin`
     return {opts with useStdin := true}
   | 'r' => -- `--run`
-    return {opts with run := true}
+    return {opts with
+      run := true
+      -- can't get IR if it's postponed
+      leanOpts := Compiler.compiler.postponeCompile.set opts.leanOpts false }
   | 'o' => -- `--o, olean=fname`
     return {opts with oleanFileName? := ← checkOptArg "o" optArg?}
   | 'i' => -- `--i, ilean=fname`
@@ -409,9 +508,17 @@ def ShellOptions.process (opts : ShellOptions)
       Internal.enableDebug arg
       return opts
     -- if not `LEAN_DEBUG`, fall through to unknown option
-  | 'p' => -- `--plugin=file`
+  | 'p' => -- `--plugin=file[=fn]`
     let arg ← checkOptArg "p" optArg?
-    Lean.loadPlugin arg
+    let (path, fn?) :=
+      let pos := arg.find '='
+      if h : pos.IsAtEnd then
+        (FilePath.mk arg, none)
+      else
+        let path := arg.sliceTo pos
+        let initFn := arg.sliceFrom (pos.next h)
+        (FilePath.mk path.copy, some initFn.copy)
+    Lean.loadPlugin path fn?
     let forwardedArgs := opts.forwardedArgs.push s!"-p{arg}"
     return {opts with forwardedArgs}
   | 'l' => -- `--load-dynlib=file`
@@ -425,6 +532,12 @@ def ShellOptions.process (opts : ShellOptions)
     let arg ← checkOptArg "E" optArg?
     let errorOnKinds := opts.errorOnKinds.push arg.toName
     return {opts with errorOnKinds}
+  | 'Y' => -- `--incr-save=file`
+    return {opts with incrSaveFileName? := ← checkOptArg "Y" optArg?}
+  | 'Z' => -- `--incr-load=file`
+    return {opts with incrLoadFileName? := ← checkOptArg "Z" optArg?}
+  | 'H' => -- `--incr-header-save=file`
+    return {opts with incrHeaderSaveFileName? := ← checkOptArg "H" optArg?}
   | _ =>
     pure ()
   eprint "Unknown command line option\n"
@@ -495,11 +608,14 @@ def shellMain (args : List String) (opts : ShellOptions) : IO UInt32 := do
       IO.eprintln "Expected exactly one file name"
       displayHelp (useStderr := true)
       return 1
+  IO.println s!"[DEBUG:I] fileName = {fileName}"
+  IO.println "[DEBUG:I] Reading file contents"
   let contents ← decodeLossyUTF8 <$> do
     if opts.useStdin then
       (← IO.getStdin).readBinToEnd
     else
       IO.FS.readBinFile fileName
+  IO.println s!"[DEBUG:I] contents length = {contents.length}"
   if opts.onlyDeps then
     Elab.printImports contents fileName
     return 0
@@ -521,7 +637,9 @@ def shellMain (args : List String) (opts : ShellOptions) : IO UInt32 := do
       pure (contents.sliceFrom endLinePos).copy
     else
       pure contents
+  IO.println "[DEBUG:J] Loading module setup"
   let setup? ← opts.setupFileName?.mapM ModuleSetup.load
+  IO.println s!"[DEBUG:J] setup? = {setup?.isSome}"
   let mainModuleName ←
     if let some setup := setup? then
       pure setup.name
@@ -533,9 +651,14 @@ def shellMain (args : List String) (opts : ShellOptions) : IO UInt32 := do
           throw e
     else
       pure `_stdin
+  IO.println s!"[DEBUG:J] mainModuleName = {mainModuleName}"
+  IO.println "[DEBUG:K] Calling Elab.runFrontend"
   let env? ← Elab.runFrontend contents opts.leanOpts fileName mainModuleName
     opts.trustLevel opts.oleanFileName? opts.ileanFileName? opts.jsonOutput opts.errorOnKinds
     #[] opts.printStats setup?
+    (incrSaveFileName? := opts.incrSaveFileName?)
+    (incrLoadFileName? := opts.incrLoadFileName?)
+    (incrHeaderSaveFileName? := opts.incrHeaderSaveFileName?)
   if let some env := env? then
     if opts.run then
       return ← runMain env opts.leanOpts args
@@ -544,7 +667,8 @@ def shellMain (args : List String) (opts : ShellOptions) : IO UInt32 := do
         | IO.eprintln s!"failed to create '{c}'"
           return 1
       profileitIO "C code generation" opts.leanOpts do
-        let data ← IO.ofExcept <| IR.emitC env mainModuleName
+        let data ← Compiler.LCNF.emitC mainModuleName
+          |>.toIO' { fileName, fileMap := default } { env }
         out.write data.toUTF8
     if let some bc := opts.bcFileName? then
       initLLVM

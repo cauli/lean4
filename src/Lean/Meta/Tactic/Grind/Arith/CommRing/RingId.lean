@@ -6,9 +6,6 @@ Authors: Leonardo de Moura
 module
 prelude
 public import Lean.Meta.Tactic.Grind.Arith.CommRing.RingM
-import Init.Grind.Ring.Field
-import Init.Grind.Ring.Envelope
-import Lean.Meta.Tactic.Grind.Simp
 import Lean.Meta.Tactic.Grind.Arith.Insts
 public section
 namespace Lean.Meta.Grind.Arith.CommRing
@@ -41,11 +38,13 @@ where
     let noZeroDivInst? ← getNoZeroDivInst? u type
     trace_goal[grind.ring] "NoNatZeroDivisors available: {noZeroDivInst?.isSome}"
     let fieldInst? ← synthInstance? <| mkApp (mkConst ``Grind.Field [u]) type
+    let powIdentityInst? ← getPowIdentityInst? u type
+    trace_goal[grind.ring] "PowIdentity available: {powIdentityInst?.isSome}"
     let semiringId? := none
     let id := (← get').rings.size
     let ring : CommRing := {
       id, semiringId?, type, u, semiringInst, ringInst, commSemiringInst,
-      commRingInst, charInst?, noZeroDivInst?, fieldInst?,
+      commRingInst, charInst?, noZeroDivInst?, fieldInst?, powIdentityInst?,
     }
     modify' fun s => { s with rings := s.rings.push ring }
     return some id

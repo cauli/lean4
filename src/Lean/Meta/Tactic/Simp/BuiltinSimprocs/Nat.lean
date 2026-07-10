@@ -4,13 +4,15 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
 module
-
 prelude
 public import Init.Simproc
 public import Lean.Meta.Tactic.Simp.BuiltinSimprocs.Util
-
+public import Lean.Meta.LitValues
+public import Lean.Meta.Offset
+import Lean.Util.SafeExponentiation
+import Init.Data.Nat.Dvd
+import Init.Data.Nat.Simproc
 public section
-
 namespace Nat
 open Lean Meta Simp
 
@@ -85,12 +87,12 @@ builtin_dsimproc [seval] isValue ((OfNat.ofNat _ : Nat)) := fun e => do
 
 /-- A literal natural number or a base + offset expression. -/
 private inductive NatOffset where
-  /- denotes expression definition equal to `n` -/
+  /-- denotes expression definition equal to `n` -/
   | const (n : Nat)
   /-- denotes `e + o` where `o` is expression definitionally equal to `n` -/
   | offset (e o : Expr) (n : Nat)
 
-/- Attempt to parse a `NatOffset` from an expression-/
+/-- Attempt to parse a `NatOffset` from an expression-/
 private partial def NatOffset.asOffset (e : Expr) : Meta.SimpM (Option (Expr × Nat)) := do
   if e.isAppOfArity ``HAdd.hAdd 6 then
     let inst := e.appFn!.appFn!.appArg!
@@ -115,7 +117,7 @@ private partial def NatOffset.asOffset (e : Expr) : Meta.SimpM (Option (Expr × 
   else
     pure none
 
-/- Attempt to parse a `NatOffset` from an expression-/
+/-- Attempt to parse a `NatOffset` from an expression-/
 private partial def NatOffset.fromExprAux (e : Expr) (inc : Nat) : Meta.SimpM (Option (Expr × Nat)) := do
   let e := e.consumeMData
   match ← asOffset e with
@@ -124,7 +126,7 @@ private partial def NatOffset.fromExprAux (e : Expr) (inc : Nat) : Meta.SimpM (O
   | none =>
     return if inc != 0 then some (e, inc) else none
 
-/- Attempt to parse a `NatOffset` from an expression-/
+/-- Attempt to parse a `NatOffset` from an expression-/
 private def NatOffset.fromExpr? (e : Expr) (inc : Nat := 0) : Meta.SimpM (Option NatOffset) := do
   match ← Nat.fromExpr? e with
   | some n => pure (some (const (n + inc)))
@@ -134,37 +136,37 @@ private def NatOffset.fromExpr? (e : Expr) (inc : Nat := 0) : Meta.SimpM (Option
     | some (b, o) => pure (some (offset b (toExpr o) o))
 
 private def mkAddNat (x y : Expr) : Expr :=
-  let lz := levelZero
+  let lz := Level.zero
   let nat := mkConst ``Nat
   let instHAdd := mkAppN (mkConst ``instHAdd [lz]) #[nat, mkConst ``instAddNat]
   mkAppN (mkConst ``HAdd.hAdd [lz, lz, lz]) #[nat, nat, nat, instHAdd, x, y]
 
 private def mkSubNat (x y : Expr) : Expr :=
-  let lz := levelZero
+  let lz := Level.zero
   let nat := mkConst ``Nat
   let instSub := mkConst ``instSubNat
   let instHSub := mkAppN (mkConst ``instHSub [lz]) #[nat, instSub]
   mkAppN (mkConst ``HSub.hSub [lz, lz, lz]) #[nat, nat, nat, instHSub, x, y]
 
 private def mkEqNat (x y : Expr) : Expr :=
-  mkAppN (mkConst ``Eq [levelOne]) #[mkConst ``Nat, x, y]
+  mkAppN (mkConst ``Eq [Level.one]) #[mkConst ``Nat, x, y]
 
 private def mkBEqNatInstance : Expr :=
-  mkAppN (mkConst ``instBEqOfDecidableEq [levelZero]) #[mkConst ``Nat, mkConst ``instDecidableEqNat []]
+  mkAppN (mkConst ``instBEqOfDecidableEq [Level.zero]) #[mkConst ``Nat, mkConst ``instDecidableEqNat []]
 
 private def mkBEqNat (x y : Expr) : Expr :=
-  mkAppN (mkConst ``BEq.beq [levelZero]) #[mkConst ``Nat, mkBEqNatInstance, x, y]
+  mkAppN (mkConst ``BEq.beq [Level.zero]) #[mkConst ``Nat, mkBEqNatInstance, x, y]
 
 private def mkBneNat (x y : Expr) : Expr :=
-  mkAppN (mkConst ``bne [levelZero]) #[mkConst ``Nat, mkBEqNatInstance, x, y]
+  mkAppN (mkConst ``bne [Level.zero]) #[mkConst ``Nat, mkBEqNatInstance, x, y]
 
 private def mkLENat (x y : Expr) : Expr :=
-  mkAppN (.const ``LE.le [levelZero]) #[mkConst ``Nat, mkConst ``instLENat, x, y]
+  mkAppN (.const ``LE.le [Level.zero]) #[mkConst ``Nat, mkConst ``instLENat, x, y]
 
 private def mkGENat (x y : Expr) : Expr := mkLENat y x
 
 private def mkLTNat (x y : Expr) : Expr :=
-  mkAppN (.const ``LT.lt [levelZero]) #[mkConst ``Nat, mkConst ``instLTNat, x, y]
+  mkAppN (.const ``LT.lt [Level.zero]) #[mkConst ``Nat, mkConst ``instLTNat, x, y]
 
 private def mkGTNat (x y : Expr) : Expr := mkLTNat y x
 
@@ -188,6 +190,12 @@ def applyEqLemma (e : Expr → EqResult) (lemmaName : Name) (args : Array Expr) 
   return .some (e (mkAppN (mkConst lemmaName) args))
 
 def reduceNatEqExpr (x y : Expr) : SimpM (Option EqResult):= do
+  /-
+  **TODO**: These proofs rely too much on definitional equality.
+  Example:
+  `x + 1 + 1 + ... + 1 = x + 1 + ... + 1`
+  It will treat both sides as `x + n = x + n`.
+  -/
   let some xno ← NatOffset.fromExpr? x | return none
   let some yno ← NatOffset.fromExpr? y | return none
   match xno, yno with

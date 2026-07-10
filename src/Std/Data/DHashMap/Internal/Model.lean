@@ -11,6 +11,8 @@ public import Std.Data.DHashMap.Basic
 import all Std.Data.DHashMap.Internal.Defs
 public import Std.Data.DHashMap.Internal.HashesTo
 public import Std.Data.DHashMap.Internal.AssocList.Lemmas
+import Init.Data.Array.Bootstrap
+import Init.Data.UInt.Lemmas
 
 @[expose] public section
 
@@ -536,10 +538,10 @@ theorem insert_eq_insertₘ [BEq α] [Hashable α] (m : Raw₀ α β) (a : α) (
 
 theorem alter_eq_alterₘ [BEq α] [Hashable α] [LawfulBEq α] (m : Raw₀ α β) (a : α)
     (f : Option (β a) → Option (β a)) : m.alter a f = m.alterₘ a f := by
-    dsimp only [alter, alterₘ, containsₘ, ← bucket_eq]
+    simp only [alter, alterₘ, containsₘ, ← bucket_eq]
     split
     · congr 2
-      · simp only [withComputedSize, bucket_updateBucket]
+      · simp only [withComputedSize, bucket_updateBucket, AssocList.contains_eq]
       · simp only [Array.uset, bucket, Array.ugetElem_eq_getElem, Array.set_set, updateBucket]
     · congr
 
@@ -566,10 +568,10 @@ variable {β : Type v}
 
 theorem alter_eq_alterₘ [BEq α] [Hashable α] [EquivBEq α] (m : Raw₀ α (fun _ => β)) (a : α)
     (f : Option β → Option β) : Const.alter m a f = Const.alterₘ m a f := by
-    dsimp only [alter, alterₘ, containsₘ, ← bucket_eq]
+    simp only [alter, alterₘ, containsₘ, ← bucket_eq]
     split
     · congr 2
-      · simp only [withComputedSize, bucket_updateBucket]
+      · simp only [withComputedSize, bucket_updateBucket, AssocList.contains_eq]
       · simp only [Array.uset, bucket, Array.ugetElem_eq_getElem, Array.set_set, updateBucket]
     · congr
 

@@ -6,7 +6,6 @@ Authors: Paul Reichert
 module
 
 prelude
-public import Init.Data.Iterators.Internal.Termination
 public import Init.Data.Iterators.Consumers.Monadic
 
 public section
@@ -32,7 +31,6 @@ instance {n : Type max u v → Type v'} [Monad n] : Monad.{u} (ULiftT n) where
   pure a := pure (f := n) (ULift.up a)
   bind x f := bind (m := n) (x : n _) fun a => f a.down
 
-@[no_expose]
 instance {n : Type max u v → Type v'} [Monad n] [LawfulMonad n] : LawfulMonad.{u} (ULiftT n) where
   map_const := by simp [Functor.mapConst, Functor.map]
   id_map := by simp [Functor.map]
@@ -99,7 +97,7 @@ instance ULiftIterator.instIterator [Iterator α m β] [Monad n] :
 
 private def ULiftIterator.instFinitenessRelation [Iterator α m β] [Finite α m] [Monad n] :
     FinitenessRelation (ULiftIterator α m n β lift) n where
-  rel := InvImage WellFoundedRelation.rel (fun it => it.internalState.inner.finitelyManySteps)
+  Rel := InvImage WellFoundedRelation.rel (fun it => it.internalState.inner.finitelyManySteps)
   wf := InvImage.wf _ WellFoundedRelation.wf
   subrelation h := by
     rcases h with ⟨_, hs, step, hp, rfl⟩
@@ -115,7 +113,7 @@ instance ULiftIterator.instFinite [Iterator α m β] [Finite α m] [Monad n] :
 
 private def ULiftIterator.instProductivenessRelation [Iterator α m β] [Productive α m] [Monad n] :
     ProductivenessRelation (ULiftIterator α m n β lift) n where
-  rel := InvImage WellFoundedRelation.rel (fun it => it.internalState.inner.finitelyManySkips)
+  Rel := InvImage WellFoundedRelation.rel (fun it => it.internalState.inner.finitelyManySkips)
   wf := InvImage.wf _ WellFoundedRelation.wf
   subrelation h := by
     rcases h with ⟨step, hp, hs⟩

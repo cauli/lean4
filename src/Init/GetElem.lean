@@ -7,6 +7,7 @@ module
 
 prelude
 public import Init.Util
+public import Init.Data.Option.Basic
 
 public section
 
@@ -366,8 +367,10 @@ instance : GetElem? (List α) Nat α fun as i => i < as.length where
 theorem none_eq_getElem?_iff {l : List α} {i : Nat} : none = l[i]? ↔ length l ≤ i := by
   simp [eq_comm (a := none)]
 
-@[grind =]
 theorem getElem?_eq_none (h : length l ≤ i) : l[i]? = none := getElem?_eq_none_iff.mpr h
+
+grind_pattern getElem?_eq_none => l.length, l[i]? where
+  guard l.length ≤ i
 
 instance : LawfulGetElem (List α) Nat α fun as i => i < as.length where
   getElem?_def as i h := by
@@ -378,7 +381,7 @@ instance : LawfulGetElem (List α) Nat α fun as i => i < as.length where
     | cons a as ih =>
       cases i with
       | zero => rfl
-      | succ i => simpa using ih i
+      | succ i => simpa using! ih i
 
 end List
 
