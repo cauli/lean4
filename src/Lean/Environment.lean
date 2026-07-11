@@ -2207,10 +2207,14 @@ where
       let needsIRTrans := needsIRTrans || (!loadIRSig && needsData && i.isMeta)
       -- `loadIRSig` only loads `.ir.sig` for modules whose `.olean` is also loaded
       -- (i.e., `needsData`), preserving the invariant that IR is never present without its olean.
-      -- In Emscripten, skip IR loading entirely (the .ir files are too large for the browser;
-      -- `irData?` falls back to the main module data when `irParts` is empty).
-      let needsIR := !System.Platform.isEmscripten &&
-        (needsIRTrans || importAll || globalLevel > .exported || (loadIRSig && needsData))
+      -- On Emscripten, load `.ir` wherever data is loaded: codegen phase-splits
+      -- IR, so the `.olean`'s decl map holds `.extern` stubs whose runtime
+      -- bodies live in the `.ir` part. Core stubs resolve through `dlsym` into
+      -- the linked binary, but external packages (Batteries, …) exist only as
+      -- olean trees — without their `.ir` the interpreter cannot run so much as
+      -- their `initialize` blocks. The parts are small (~17% of the oleans).
+      let needsIR := needsIRTrans || importAll || globalLevel > .exported ||
+        (loadIRSig && needsData) || (System.Platform.isEmscripten && needsData)
       if !needsData && !needsIR then
         continue
 
@@ -2343,8 +2347,6 @@ def finalizeImport (s : ImportState) (imports : Array Import) (opts : Options) (
     let some data := mod.mainModule? |
       throw <| IO.userError s!"missing data file for module {mod.module}"
     return data
-  -- Under Emscripten no `.ir` parts are loaded (see `needsIR` above); `irData?` then falls back
-  -- to the main module data, so no special case is needed here.
   let irData ← modules.mapM fun mod => do
     let some data := mod.irData? loadIRSig |
       throw <| IO.userError s!"missing IR data file for module {mod.module}"
