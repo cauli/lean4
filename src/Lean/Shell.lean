@@ -80,6 +80,11 @@ def getOrCreateWasmEnvFor (imports : Array Import) : IO Environment := do
   --    cached and reused across compiles; with the default (regions freed after
   --    import) a later compile dereferences freed regions and fails. Freeing is
   --    also unsafe once extensions are loaded (see `withImportModules`).
+  -- `withImporting` (inside `importModules`) clears the initializer-execution
+  -- flag when it returns, and a `loadExts := true` import refuses to run
+  -- without it — so every cache-miss import after the first would throw.
+  -- Re-enable it each time, as `runFrontend` does after `--incr-load`.
+  unsafe enableInitializersExecution
   let env ← importModules imports {} 0
     (level := .exported) (loadExts := true) (leakEnv := true)
   IO.eprintln "[WASM DEBUG] getOrCreateWasmEnvFor: importModules completed"
