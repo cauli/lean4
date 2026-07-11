@@ -13,6 +13,7 @@ import Lean.Server.FileWorker
 import Lean.Compiler.LCNF.EmitC
 import Init.System.Platform
 import Lean.Compiler.Options
+import Lean.Compiler.InitAttr  -- for `runInitAttrsForModules` on snapshot load
 
 /-  Lean companion to  `shell.cpp` -/
 
@@ -182,6 +183,41 @@ Call this if you need to re-import modules (e.g., after changing search paths).
 def wasmReset : IO Unit := do
   wasmEnvCache.set #[]
   IO.println "[WASM] Environment cache cleared"
+
+/--
+Seed the WASM environment cache from a `--incr-header-save` snapshot file,
+so the first compile with that header import set skips the multi-minute
+`loadExts` import entirely.
+
+The snapshot must have been saved by this same binary: its closure relocation
+(the base-0 "wasm-main" pseudo-library) is the identity, which is only correct
+against this build's function table. The cache key is read back out of the
+loaded environment's header, so the file needs no naming convention.
+
+Returns 0 on success, 1 on failure — the next compile then just falls back to
+a regular import.
+-/
+@[export lean_wasm_load_snapshot]
+def wasmLoadSnapshot (path : String) : IO UInt32 := do
+  try
+    IO.eprintln s!"[WASM DEBUG] wasmLoadSnapshot: loading {path}"
+    let (cmdState, initModIdxs) ← unsafe Elab.loadHeaderSnapshotCmdState ⟨path⟩
+    let env := cmdState.env.setMainModule .anonymous
+    -- Replay the `[init]` attributes the imported modules would have run.
+    -- `runInitAttrsForModules` requires initializer execution to be enabled,
+    -- and `withImporting` clears the flag when it returns, so enable on both
+    -- sides (the same restore `runFrontend` performs after `--incr-load`).
+    unsafe enableInitializersExecution
+    withImporting do
+      unsafe runInitAttrsForModules env initModIdxs {}
+    unsafe enableInitializersExecution
+    let key := env.header.imports.map (·.module)
+    wasmEnvCache.modify (·.push (key, env))
+    IO.eprintln s!"[WASM DEBUG] wasmLoadSnapshot: cached env for {key}"
+    return 0
+  catch e =>
+    IO.eprintln s!"[WASM DEBUG] wasmLoadSnapshot failed: {e}"
+    return 1
 
 /-- Whether Lean was built with an address sanitizer enabled. -/
 @[extern "lean_internal_has_address_sanitizer"]

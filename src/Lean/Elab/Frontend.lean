@@ -266,6 +266,22 @@ private def setMainModule (snap : Language.Lean.InitialSnapshot) (m : Name) :
     result? := some { parsed with
       processedSnap := .finished none newProcessed } }
 
+/--
+Loads a `--incr-header-save` snapshot and returns its post-import command state
+together with the `[init]` module indices `runInitAttrsForModules` must replay.
+For hosts that consume the header environment directly instead of driving the
+language processor — the WASM shell seeds its per-import-set environment cache
+this way, skipping the multi-minute `loadExts` import.
+-/
+unsafe def loadHeaderSnapshotCmdState (fname : System.FilePath) :
+    IO (Command.State × Array Nat) := do
+  let incr ← loadIncrSnapshot fname
+  let some parsed := incr.snap.result?
+    | throw <| IO.userError s!"snapshot {fname} has no parse result"
+  let some hps := parsed.processedSnap.get.result?
+    | throw <| IO.userError s!"snapshot {fname} has no processed header"
+  return (hps.cmdState, incr.initModIdxs)
+
 def runFrontend
     (input : String)
     (opts : Options)
