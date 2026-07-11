@@ -75,9 +75,10 @@ jobs:
           cd batteries/.lake/build/lib
           # Lake nests oleans under lib/lean/ in recent versions, flat before.
           [ -d lean ] && cd lean
-          # Ship what the playground loads: .olean plus .ir (compiled bodies for
-          # #eval; module-system files only — legacy oleans are self-contained).
-          find . \( -name '*.olean' -o -name '*.ir' \) | tar -cf - -T - | zstd -19 -T0 -o "$GITHUB_WORKSPACE/batteries-oleans-linux_32.tar.zst"
+          # Ship what the playground loads: .olean plus .ir/.ir.sig — the runtime
+          # bodies live in .ir (the olean's decl map holds .extern stubs), and
+          # the reader only picks up an .ir when its .ir.sig sits beside it.
+          find . \( -name '*.olean' -o -name '*.ir' -o -name '*.ir.sig' \) | tar -cf - -T - | zstd -19 -T0 -o "$GITHUB_WORKSPACE/batteries-oleans-linux_32.tar.zst"
           ls -la "$GITHUB_WORKSPACE/batteries-oleans-linux_32.tar.zst"
       - name: Upload artifact
         uses: actions/upload-artifact@v4
