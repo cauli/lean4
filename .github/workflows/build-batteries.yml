@@ -27,7 +27,10 @@ jobs:
         run: |
           sudo dpkg --add-architecture i386
           sudo apt-get update
-          sudo apt-get install -y libc6:i386 libstdc++6:i386 zlib1g:i386 libuv1:i386 zstd
+          # gcc-multilib: lake also compiles the emitted .c with -m32 (we ship
+          # only .olean/.ir, but letting the standard build complete validates
+          # the package and needs just the 32-bit libc headers).
+          sudo apt-get install -y libc6:i386 libstdc++6:i386 zlib1g:i386 libuv1:i386 zstd gcc-multilib g++-multilib
           # 4.33 toolchains link libssl dynamically (4.28 did not)
           sudo apt-get install -y libssl3t64:i386 || sudo apt-get install -y libssl3:i386
       - name: Download toolchain artifact
@@ -41,8 +44,21 @@ jobs:
           tar --use-compress-program=unzstd -xf artifact/*.tar.zst
           TOOLCHAIN=$(echo lean-*-linux_32)
           echo "TOOLCHAIN=$PWD/$TOOLCHAIN" >> "$GITHUB_ENV"
+          ls -la "$TOOLCHAIN/bin"
+          file "$TOOLCHAIN"/bin/* 2>/dev/null | head
+          ldd "$TOOLCHAIN/bin/lean" 2>&1 | head -15
+          # lean --version exits non-zero here despite printing (exit 232 on
+          # both prior runs) — capture instead of dying so we can see why.
+          set +e
           "$TOOLCHAIN/bin/lean" --version
-          "$TOOLCHAIN/bin/lean" --githash
+          echo "lean --version exit code: $?"
+          set -e
+          # The triple in --version is CMake's host triple; the ELF class is
+          # the ground truth — everything depends on 32-bit oleans.
+          if ! file "$TOOLCHAIN/bin/lean" | grep -q 'ELF 32-bit'; then
+            echo "::error::toolchain lean is not a 32-bit binary — its oleans would be 64-bit and useless for wasm32"
+            exit 1
+          fi
       - name: Checkout Batteries
         run: |
           git clone https://github.com/leanprover-community/batteries batteries
@@ -51,7 +67,9 @@ jobs:
         run: |
           export PATH="$TOOLCHAIN/bin:$PATH"
           cd batteries
-          lake build
+          # The library target only: the default set also links the runLinter
+          # executable, which we don't ship and which fails to link 32-bit.
+          lake build Batteries
       - name: Package oleans
         run: |
           cd batteries/.lake/build/lib
