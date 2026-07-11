@@ -353,13 +353,23 @@ def runFrontend
   -- Saves `snapToSave` wrapped with the init-mod indices used by `runInitAttrsForModules` on load.
   -- Writes a `<incrFile>.deps` JSON helper alongside: the dep regions grouped per module (see
   -- `regionsToModuleArtifacts`), needed to map the snapshot back in before we can access `env`.
+  --
+  -- On Emscripten the snapshot is saved SELF-CONTAINED (no dep regions, empty `.deps`): dep
+  -- resolution matches pointers against each region's saved `base_addr` range, which requires
+  -- every dep to sit at its saved address on load (mmap-at-base) and all saved ranges to be
+  -- disjoint. Wasm can never map at base, and the 32-bit address space makes the independently
+  -- built oleans' saved ranges collide, so the region-referencing scheme cannot work there;
+  -- copying everything reachable into the snapshot sidesteps addresses entirely at the cost of
+  -- a larger file.
   let saveSnap (incrFile : System.FilePath) (snapToSave : Language.Lean.InitialSnapshot) :
       IO Unit := do
     let toSave : IncrSnapshot :=
       { snap := snapToSave, initModIdxs := getRegularInitAttrModIdxs env }
+    let depRegions := if System.Platform.isEmscripten then #[] else env.header.regions
     let compactor ← (unsafe CompactedRegion.save incrFile `_snap toSave
-      env.header.regions none (allowClosures := true))
-    let moduleArts := regionsToModuleArtifacts env.header.regions
+      depRegions none (allowClosures := true))
+    let moduleArts := if System.Platform.isEmscripten then #[] else
+      regionsToModuleArtifacts env.header.regions
     IO.FS.writeFile (incrFile.addExtension "deps") (toJson moduleArts).compress
     Runtime.forget compactor
 
