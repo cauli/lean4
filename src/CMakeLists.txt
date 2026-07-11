@@ -183,7 +183,6 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
   # - we're using -O3; it's /okay/
   # - -Oz produces quite slow code
   # - system libraries such as OpenGL are included in the JS but shouldn't be
-  # - we need EMSCRIPTEN_KEEPALIVE annotations on exports to run meta-dce (-s MAIN_MODULE=2)
   # - we disable "-flto" because it uses too much memory (we would need more RAM in the CI runner)
 
   # From https://emscripten.org/docs/compiling/WebAssembly.html#backends:
@@ -208,7 +207,7 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
     # (exception-heavy part-probing) in 10ms, silently, heap tiny, in both the
     # pthread and single-thread configs; the native i386 build of the same
     # sources is fine. Same class of bug 1aa6036d1f dodged on emcc 4.0.22.
-    set(EMSCRIPTEN_SETTINGS "-sALLOW_MEMORY_GROWTH=1 -sDISABLE_EXCEPTION_CATCHING=0 -pthread -sINCOMING_MODULE_JS_API=print,printErr,setStatus,locateFile,mainScriptUrlOrBlob,INITIAL_MEMORY,wasmMemory,noInitialRun,preRun,onRuntimeInitialized,onAbort,arguments,ENV")
+    set(EMSCRIPTEN_SETTINGS "-sALLOW_MEMORY_GROWTH=1 -sDISABLE_EXCEPTION_CATCHING=0 -pthread -sINCOMING_MODULE_JS_API=print,printErr,setStatus,locateFile,mainScriptUrlOrBlob,INITIAL_MEMORY,wasmMemory,noInitialRun,preRun,onRuntimeInitialized,onAbort,onExit,arguments,ENV")
 
   # EMSCRIPTEN_DEBUG: Enable readable function names and assertions for debugging
   # This makes the WASM larger and slower but shows actual function names in stack traces
@@ -896,6 +895,17 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
   # We set `ERROR_ON_UNDEFINED_SYMBOLS=0` because our build of LibUV does not
   # define all symbols, see the comment about LibUV on WebAssembly further up
   # in this file.
+  # MAIN_MODULE=2 keeps dlsym() working (the IR interpreter resolves native
+  # code — mandatorily for body-less @[extern] decls like the IO primitives —
+  # via dlsym(RTLD_DEFAULT), which searches the wasm export table) while
+  # letting wasm-ld GC everything not reachable from the export list.
+  # emscripten-exports.txt pins the symbols dlsym must see: the C runtime API
+  # (lean_*), the l_<mangled>[___boxed] stems of every @[extern] decl in the
+  # shipped libraries, and the entry points the playground workers call. All
+  # other Lean functions stay callable through their IR (shipped as .ir parts),
+  # just interpreted instead of native. This replaces MAIN_MODULE=1 +
+  # LINKABLE=1 + EXPORT_ALL=1, whose ~230k-entry export table dominated the
+  # glue JS and blocked all DCE (WebKit on iPhone dies compiling the result).
   # PTHREAD_POOL_SIZE pre-spawns worker threads so Lean can create threads without
   # the main thread blocking (Emscripten can't spawn a worker synchronously); 4
   # matched the working 4.28 build. STACK_SIZE=16MB covers whatever import work
@@ -907,7 +917,7 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
   # raises the wasm32 ceiling from 2GB so we can test whether the import fits.
   string(
     APPEND LEAN_EXE_LINKER_FLAGS
-    " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} -lnodefs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=1 -s LINKABLE=1 -s EXPORT_ALL=1 -s ERROR_ON_UNDEFINED_SYMBOLS=0 -s STACK_SIZE=16777216 -sINITIAL_MEMORY=67108864 -sMAXIMUM_MEMORY=4294967296 -sPTHREAD_POOL_SIZE=4"
+    " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} -lnodefs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=2 -s ERROR_ON_UNDEFINED_SYMBOLS=0 -sEXPORTED_FUNCTIONS=@${LEAN_SOURCE_DIR}/emscripten-exports.txt -sEXPORTED_RUNTIME_METHODS=ccall,callMain,FS,getValue,setValue,stringToNewUTF8,UTF8ToString -s STACK_SIZE=16777216 -sINITIAL_MEMORY=67108864 -sMAXIMUM_MEMORY=4294967296 -sPTHREAD_POOL_SIZE=4"
   )
 endif()
 
