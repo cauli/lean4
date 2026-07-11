@@ -28,6 +28,8 @@ jobs:
           sudo dpkg --add-architecture i386
           sudo apt-get update
           sudo apt-get install -y libc6:i386 libstdc++6:i386 zlib1g:i386 libuv1:i386 zstd
+          # 4.33 toolchains link libssl dynamically (4.28 did not)
+          sudo apt-get install -y libssl3t64:i386 || sudo apt-get install -y libssl3:i386
       - name: Download toolchain artifact
         env:
           GH_TOKEN: ${{ github.token }}
