@@ -22,6 +22,7 @@ shift 2
 mkdir -p "$OUT"
 
 emcc -o "$OUT/lean.js" \
+  "$KIT/libleanmain.a" \
   "$KIT/libleanshell.a" \
   -L "$KIT" -lleancpp -lInit -lStd -lLean -lnodefs.js -lleanrt "$KIT/libuv.a" -lstdc++ \
   -sDISABLE_EXCEPTION_CATCHING=0 -pthread \
