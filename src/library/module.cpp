@@ -16,13 +16,6 @@ Authors: Leonardo de Moura, Gabriel Ebner, Sebastian Ullrich
 #include <sys/stat.h>
 #include <cerrno>
 #include <cstring>
-#include <cstdio>
-#ifdef __EMSCRIPTEN__
-#include <emscripten.h>
-#define WASM_DIAG(...) EM_ASM(__VA_ARGS__)
-#else
-#define WASM_DIAG(...)
-#endif
 #include "runtime/thread.h"
 #include "runtime/interrupt.h"
 #include "runtime/sstream.h"
@@ -459,10 +452,7 @@ static object * mk_compacted_region(b_obj_arg ofname, object * root,
 // using a type compatible with what was saved (see `CompactedRegion.read`).
 // Supports both `v2` and `v3` formats.
 extern "C" LEAN_EXPORT object * lean_compacted_region_read(b_obj_arg ofname, b_obj_arg odep_regions) {
-    WASM_DIAG({ err('[RD] enter'); });
     std::string olean_fn(lean_string_cstr(ofname));
-    // WASM-DIAG: prove the extern is entered at all, unbuffered.
-    fprintf(stderr, "[READ-ENTRY] %s\n", olean_fn.c_str()); fflush(stderr);
     try {
         std::vector<region_view> dep_regions = extract_dep_regions(odep_regions);
 #ifdef LEAN_WINDOWS
@@ -585,7 +575,6 @@ extern "C" LEAN_EXPORT object * lean_compacted_region_read(b_obj_arg ofname, b_o
 #endif
 #endif
         }
-        WASM_DIAG({ err('[RD] buffer ready'); });
 
         // v3 format, default data otherwise
         std::vector<std::pair<size_t, ptrdiff_t>> lib_relocs;
@@ -609,25 +598,16 @@ extern "C" LEAN_EXPORT object * lean_compacted_region_read(b_obj_arg ofname, b_o
                     p += sizeof(off);
                     closure_offsets.push_back(static_cast<size_t>(off));
                 }
-                WASM_DIAG({ err('[RD] closoffs=' + $0 + ', reading lib table'); }, (int)num_closure_offsets);
                 lib_relocs = read_lib_table_from_buffer(p);
             }
         }
 
-        // WASM-DIAG: C stdio is swallowed in this build; report through the glue.
-        WASM_DIAG({ err('[RD] ver=' + $0 + ' base=0x' + ($1 >>> 0).toString(16) + ' buf=0x' + ($2 >>> 0).toString(16)
-            + ' size=' + ($3 >>> 0) + ' dsz=' + ($4 >>> 0) + ' deps=' + $5 + ' closoffs=' + $6 + ' relocs=' + $7); },
-            (int)header.version, (int)(size_t)base_addr, (int)(size_t)buffer,
-            (int)size, (int)data_section_sz, (int)dep_regions.size(),
-            (int)closure_offsets.size(), (int)lib_relocs.size());
         region_reader reader(
             data_section_sz, buffer + data_section_off,
             base_addr + data_section_off,
             std::move(dep_regions),
             std::move(lib_relocs), std::move(closure_offsets));
-        WASM_DIAG({ err('[RD] walking'); });
         object * mod = reader.read();
-        WASM_DIAG({ err('[RD] walk done'); });
         object * pair = alloc_cnstr(0, 2, 0);
         cnstr_set(pair, 0, mod);
         // The Lean region is framed by its whole mapping (`buffer`, `base_addr` = the mapped-at

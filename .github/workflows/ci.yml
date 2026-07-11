@@ -421,7 +421,7 @@ jobs:
                   // (FLT_EVAL_METHOD=2), which lean.h rejects; SSE math gives FLT_EVAL_METHOD=0.
                   // STAGE0_LEAN_EXTRA_LINKER_FLAGS='-m32': links run through leanc.sh, whose baked
                   // ldflags don't inherit the compile flags, so the arch must be repeated there.
-                  "CMAKE_OPTIONS": "-DCMAKE_C_COMPILER_WORKS=1 -DSTAGE0_USE_GMP=OFF -DSTAGE0_LEAN_EXTRA_CXX_FLAGS='-m32 -msse2 -mfpmath=sse' -DSTAGE0_LEANC_OPTS='-m32 -msse2 -mfpmath=sse' -DSTAGE0_LEAN_EXTRA_LINKER_FLAGS='-m32' -DSTAGE0_CMAKE_CXX_COMPILER=clang++ -DSTAGE0_CMAKE_C_COMPILER=clang -DSTAGE0_CMAKE_EXECUTABLE_SUFFIX=\"\" -DUSE_GMP=OFF -DMMAP=OFF -DSTAGE0_MMAP=OFF -DUSE_MIMALLOC=OFF -DEMSCRIPTEN_DEBUG=ON -DCMAKE_AR=$EMSDK/upstream/emscripten/emar -DCMAKE_TOOLCHAIN_FILE=$EMSDK/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake -DLEAN_INSTALL_SUFFIX=-linux_wasm32 -DSTAGE0_CMAKE_LIBRARY_PATH=/usr/lib/i386-linux-gnu/",
+                  "CMAKE_OPTIONS": "-DCMAKE_C_COMPILER_WORKS=1 -DSTAGE0_USE_GMP=OFF -DSTAGE0_LEAN_EXTRA_CXX_FLAGS='-m32 -msse2 -mfpmath=sse' -DSTAGE0_LEANC_OPTS='-m32 -msse2 -mfpmath=sse' -DSTAGE0_LEAN_EXTRA_LINKER_FLAGS='-m32' -DSTAGE0_CMAKE_CXX_COMPILER=clang++ -DSTAGE0_CMAKE_C_COMPILER=clang -DSTAGE0_CMAKE_EXECUTABLE_SUFFIX=\"\" -DUSE_GMP=OFF -DMMAP=OFF -DSTAGE0_MMAP=OFF -DUSE_MIMALLOC=OFF -DCMAKE_AR=$EMSDK/upstream/emscripten/emar -DCMAKE_TOOLCHAIN_FILE=$EMSDK/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake -DLEAN_INSTALL_SUFFIX=-linux_wasm32 -DSTAGE0_CMAKE_LIBRARY_PATH=/usr/lib/i386-linux-gnu/",
                   "wasm": true,
                   "cmultilib": true,
                   "release": true,

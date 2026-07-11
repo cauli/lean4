@@ -2086,16 +2086,10 @@ abbrev ImportStateM := StateRefT ImportState IO
   x.run s
 
 private def readModuleDataPartsOfMod (mod : Name) : IO (Array (ModuleData × CompactedRegion)) := do
-  -- WASM-DIAG: the import trap fires inside this function before the reader
-  -- extern is entered (its C-side probes stay silent); bracket each step.
-  IO.eprintln s!"[PARTS] {mod}: findOLean"
   let mFile ← findOLean mod
-  IO.eprintln s!"[PARTS] {mod}: found {mFile}"
   unless (← mFile.pathExists) do
     throw <| IO.userError s!"object file '{mFile}' of module {mod} does not exist"
-  IO.eprintln s!"[PARTS] {mod}: exists, reading"
   let main ← unsafe CompactedRegion.read (α := ModuleData) mFile #[]
-  IO.eprintln s!"[PARTS] {mod}: read ok"
   if !main.1.isModule then
     return #[main]
   -- Opportunistically load all available parts.
