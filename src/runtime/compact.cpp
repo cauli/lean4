@@ -100,6 +100,15 @@ LEAN_EXPORT std::vector<lib_info> get_loaded_libs() {
         if (!name) continue;
         libs.push_back({reinterpret_cast<size_t>(hdr), name});
     }
+#elif defined(__EMSCRIPTEN__)
+    // Wasm has no shared libraries and no dl_iterate_phdr (see the stub in
+    // debug.cpp); a "function pointer" is an index into the module's function
+    // table, which is stable for a given binary. Present that table as one
+    // pseudo-library at base 0: closures then compact to ("wasm-main", index)
+    // and relocate as the identity when the same binary reloads the region.
+    // A region saved by one build must not be loaded by another — the callers
+    // key snapshot files by the Lean githash.
+    libs.push_back({0, "wasm-main"});
 #else
     // Linux: use dl_iterate_phdr
     dl_iterate_phdr([](struct dl_phdr_info * info, size_t, void * data) -> int {
