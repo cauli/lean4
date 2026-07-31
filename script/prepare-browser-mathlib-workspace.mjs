@@ -22,18 +22,22 @@ if (actualCommit !== proofwidgets.rev) {
   throw new Error(`ProofWidgets checkout is ${actualCommit}; expected ${proofwidgets.rev}`)
 }
 
-const lakefilePath = path.join(proofwidgetsRoot, 'lakefile.lean')
+const mathlibCommit = execFileSync('git', ['-C', workspace, 'rev-parse', 'HEAD'], {
+  encoding: 'utf8',
+}).trim()
+const lakefilePath = path.join(workspace, 'lakefile.lean')
 const source = fs.readFileSync(lakefilePath, 'utf8')
-const marker = `@[default_target]
-lean_lib ProofWidgets where
-  needs := #[widgetJsAll]
+const marker = `require "leanprover-community" / "proofwidgets" @ git "v0.0.83-pre2" -- ProofWidgets should always be pinned to a specific version
+  with NameMap.empty.insert \`errorOnBuild
+    "ProofWidgets not up-to-date. \\
+    Please run \`lake exe cache get\` to fetch the latest ProofWidgets. \\
+    If this does not work, report your issue on the Lean Zulip."
 `
-const replacement = `@[default_target]
-lean_lib ProofWidgets
+const replacement = `require "leanprover-community" / "proofwidgets" @ git "v0.0.83-pre2" -- ProofWidgets should always be pinned to a specific version
 `
 const markerIndex = source.indexOf(marker)
 if (markerIndex === -1 || source.indexOf(marker, markerIndex + marker.length) !== -1) {
-  throw new Error('Expected exactly one ProofWidgets widgetJsAll library dependency')
+  throw new Error('Expected exactly one Mathlib ProofWidgets errorOnBuild guard')
 }
 fs.writeFileSync(lakefilePath, source.replace(marker, replacement))
 
@@ -41,11 +45,15 @@ const adjustments = {
   schemaVersion: 1,
   adjustments: [
     {
-      package: 'proofwidgets',
-      commit: actualCommit,
-      change: 'omit-target-dependency',
-      target: 'widgetJsAll',
-      reason: 'The browser library artifact ships Lean .olean/.ir files, not the ProofWidgets TypeScript bundle.',
+      package: 'mathlib',
+      commit: mathlibCommit,
+      dependency: {
+        package: 'proofwidgets',
+        commit: actualCommit,
+      },
+      change: 'allow-pinned-source-build',
+      target: 'proofwidgets:widgetJsAll',
+      reason: 'The sidecar needs the JavaScript embedded by ProofWidgets Lean modules, so build it from the pinned package-lock instead of requiring a cached release.',
     },
   ],
 }
@@ -54,4 +62,4 @@ fs.writeFileSync(
   `${JSON.stringify(adjustments, null, 2)}\n`,
 )
 
-console.log(`Prepared Lean-only ProofWidgets workspace at ${actualCommit}`)
+console.log(`Enabled the pinned ProofWidgets source build at ${actualCommit}`)

@@ -27,9 +27,11 @@ toolchain label live in
 [`browser-mathlib-manifold-closure.lock.json`](../../.github/browser-mathlib-manifold-closure.lock.json).
 The uploaded `manifest.json` records those pins, all transitive Lake package
 revisions, the two input artifact names, every packaged file, and the SHA-256
-of each pack. It also records the Lean-only ProofWidgets workspace adjustment:
-the TypeScript `widgetJsAll` target is not built because the artifact ships only
-Lean `.olean` and `.ir` files. `SHA256SUMS` covers the manifest and packs.
+of each pack. It also records the ProofWidgets workspace adjustment: the pinned
+TypeScript `widgetJsAll` target is built from its package lock because its output
+is embedded in Lean modules, instead of requiring a prebuilt ProofWidgets release.
+Lean `.olean` and `.ir` files are then packaged. `SHA256SUMS` covers the manifest
+and packs.
 
 The workflow rejects a run id from another repository, a run not based on the
 locked compatible upstream revision, or a run whose `Web Assembly` or `Linux
