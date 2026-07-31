@@ -26,7 +26,7 @@ jobs:
       - name: Checkout exact Lean fork revision
         uses: actions/checkout@v5
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -60,6 +60,11 @@ jobs:
           RUN_COMMIT=$(gh api "repos/${{ github.repository }}/actions/runs/$TOOLCHAIN_RUN_ID" --jq '.head_sha')
           test "$RUN_REPOSITORY" = "${{ github.repository }}"
 
+          COMPARE_STATUS=$(gh api \
+            "repos/${{ github.repository }}/compare/$LEAN_UPSTREAM_COMMIT...$RUN_COMMIT" \
+            --jq '.status')
+          [[ "$COMPARE_STATUS" == ahead || "$COMPARE_STATUS" == identical ]]
+
           # The top-level Lean CI conclusion may be red because an unrelated
           # sentinel or another platform failed. Require the two actual input
           # jobs instead of coupling this sidecar to the entire matrix.
@@ -74,7 +79,6 @@ jobs:
           done
 
           test "$(jq -r '.fullMathlib' "$LOCK")" = false
-          git merge-base --is-ancestor "$LEAN_UPSTREAM_COMMIT" "$RUN_COMMIT"
 
           echo "LEAN_COMMIT=$RUN_COMMIT" >> "$GITHUB_ENV"
           echo "LEAN_SHORT=${RUN_COMMIT:0:10}" >> "$GITHUB_ENV"
