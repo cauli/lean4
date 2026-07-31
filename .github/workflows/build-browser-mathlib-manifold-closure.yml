@@ -42,12 +42,13 @@ jobs:
             gcc-multilib g++-multilib zstd
 
       - name: Resolve and verify locked revisions
+        id: pins
         env:
           GH_TOKEN: ${{ github.token }}
           TOOLCHAIN_RUN_ID: ${{ inputs.toolchain_run_id }}
         run: |
           LOCK=.github/browser-mathlib-manifold-closure.lock.json
-          LEAN_COMMIT=$(git rev-parse HEAD)
+          WORKFLOW_COMMIT=$(git rev-parse HEAD)
           LEAN_UPSTREAM_COMMIT=$(jq -r '.lean.upstreamCommit' "$LOCK")
           LEAN_TOOLCHAIN=$(jq -r '.lean.toolchain' "$LOCK")
           MATHLIB_REPOSITORY=$(jq -r '.mathlib.repository' "$LOCK")
@@ -57,16 +58,28 @@ jobs:
 
           RUN_REPOSITORY=$(gh api "repos/${{ github.repository }}/actions/runs/$TOOLCHAIN_RUN_ID" --jq '.repository.full_name')
           RUN_COMMIT=$(gh api "repos/${{ github.repository }}/actions/runs/$TOOLCHAIN_RUN_ID" --jq '.head_sha')
-          RUN_CONCLUSION=$(gh api "repos/${{ github.repository }}/actions/runs/$TOOLCHAIN_RUN_ID" --jq '.conclusion')
           test "$RUN_REPOSITORY" = "${{ github.repository }}"
-          test "$RUN_COMMIT" = "$LEAN_COMMIT"
-          test "$RUN_CONCLUSION" = success
+
+          # The top-level Lean CI conclusion may be red because an unrelated
+          # sentinel or another platform failed. Require the two actual input
+          # jobs instead of coupling this sidecar to the entire matrix.
+          RUN_JOBS=$(gh api "repos/${{ github.repository }}/actions/runs/$TOOLCHAIN_RUN_ID/jobs?per_page=100")
+          for JOB_NAME in \
+            "build-secondary / Web Assembly" \
+            "build-secondary / Linux 32bit"
+          do
+            jq -e --arg name "$JOB_NAME" \
+              '[.jobs[] | select(.name == $name and .conclusion == "success")] | length == 1' \
+              <<< "$RUN_JOBS"
+          done
 
           test "$(jq -r '.fullMathlib' "$LOCK")" = false
-          git merge-base --is-ancestor "$LEAN_UPSTREAM_COMMIT" "$LEAN_COMMIT"
+          git merge-base --is-ancestor "$RUN_COMMIT" "$WORKFLOW_COMMIT"
+          git merge-base --is-ancestor "$LEAN_UPSTREAM_COMMIT" "$RUN_COMMIT"
 
-          echo "LEAN_COMMIT=$LEAN_COMMIT" >> "$GITHUB_ENV"
-          echo "LEAN_SHORT=${LEAN_COMMIT:0:10}" >> "$GITHUB_ENV"
+          echo "LEAN_COMMIT=$RUN_COMMIT" >> "$GITHUB_ENV"
+          echo "LEAN_SHORT=${RUN_COMMIT:0:10}" >> "$GITHUB_ENV"
+          echo "WORKFLOW_COMMIT=$WORKFLOW_COMMIT" >> "$GITHUB_ENV"
           echo "LEAN_UPSTREAM_COMMIT=$LEAN_UPSTREAM_COMMIT" >> "$GITHUB_ENV"
           echo "LEAN_TOOLCHAIN=$LEAN_TOOLCHAIN" >> "$GITHUB_ENV"
           echo "MATHLIB_REPOSITORY=$MATHLIB_REPOSITORY" >> "$GITHUB_ENV"
@@ -74,6 +87,14 @@ jobs:
           echo "MATHLIB_SHORT=${MATHLIB_COMMIT:0:10}" >> "$GITHUB_ENV"
           echo "ROOT_MODULE=$ROOT_MODULE" >> "$GITHUB_ENV"
           echo "LAYER_ID=$LAYER_ID" >> "$GITHUB_ENV"
+          echo "lean_commit=$RUN_COMMIT" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact toolchain source revision
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.pins.outputs.lean_commit }}
+          path: lean-toolchain-source
+          fetch-depth: 1
 
       - name: Download matching native and browser toolchains
         env:
@@ -135,7 +156,7 @@ jobs:
           node script/package-browser-library.mjs \
             --workspace "$PWD/mathlib4" \
             --core "$PWD/toolchains/wasm32/lib/lean" \
-            --lean-source "$PWD/src" \
+            --lean-source "$PWD/lean-toolchain-source/src" \
             --output "$PWD/browser-mathlib-manifold-closure/packs" \
             --manifest "$PWD/browser-mathlib-manifold-closure/manifest.json" \
             --root "$ROOT_MODULE" \
@@ -143,6 +164,7 @@ jobs:
             --lean-repository "${{ github.repository }}" \
             --lean-commit "$LEAN_COMMIT" \
             --lean-upstream-commit "$LEAN_UPSTREAM_COMMIT" \
+            --workflow-commit "$WORKFLOW_COMMIT" \
             --mathlib-repository "$MATHLIB_REPOSITORY" \
             --mathlib-commit "$MATHLIB_COMMIT" \
             --toolchain-run-id "${{ inputs.toolchain_run_id }}"
