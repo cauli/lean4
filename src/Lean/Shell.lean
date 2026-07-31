@@ -51,6 +51,124 @@ opaque emitLLVM (env : Environment) (modName : Name) (filepath : FilePath) : IO 
 @[extern "lean_display_cumulative_profiling_times"]
 opaque displayCumulativeProfilingTimes : BaseIO Unit
 
+/-! ## WASM API
+
+These functions provide a WASM-friendly API that caches the environment
+between calls, avoiding the slow re-import of Init modules on each compile.
+-/
+
+/-- Cached environment for WASM reuse. Initialized on first compile. -/
+private initialize wasmEnvCache : IO.Ref (Option Environment) ← IO.mkRef none
+
+/-- Get or create the cached WASM environment with Init imported. -/
+def getOrCreateWasmEnv : IO Environment := do
+  IO.eprintln "[WASM DEBUG] getOrCreateWasmEnv: checking cache..."
+  if let some env ← wasmEnvCache.get then
+    IO.eprintln "[WASM DEBUG] getOrCreateWasmEnv: returning cached env"
+    return env
+  IO.eprintln "[WASM DEBUG] getOrCreateWasmEnv: cache miss, importing Init modules..."
+  -- Mirror the frontend's header import (`processHeaderCore`, Elab/Import.lean):
+  --  * `loadExts := true` loads the environment extensions — parser notation
+  --    (e.g. `+`) and the instance database (e.g. `OfNat`). Without it (the
+  --    default `false`), `#check 2 + 2` fails with "OfNat" / "unexpected '+'".
+  --  * `level := .exported` matches the only data the WASM build ships (base
+  --    `.olean`); the default `.private` expects absent private/server data.
+  --  * `leakEnv := true` keeps the compacted regions alive. The env is cached
+  --    and reused across compiles; with the default (regions freed after
+  --    import) the second compile dereferences freed regions and fails. Freeing
+  --    is also unsafe once extensions are loaded (see `withImportModules`).
+  let env ← importModules #[{ module := `Init }] {} 0
+    (level := .exported) (loadExts := true) (leakEnv := true)
+  IO.eprintln "[WASM DEBUG] getOrCreateWasmEnv: importModules completed"
+  wasmEnvCache.set (some env)
+  IO.eprintln "[WASM DEBUG] getOrCreateWasmEnv: environment cached"
+  return env
+
+/--
+Compile Lean code using a cached environment.
+
+This is the main WASM entry point. The first call will import Init modules (slow),
+but subsequent calls reuse the cached environment (fast).
+
+The `fileName` parameter is optional - it's only used as a label in error messages,
+not for actual file I/O. The `code` string is processed directly in memory.
+
+Returns 0 on success, 1 on error. Output is written to stdout as JSON.
+-/
+@[export lean_wasm_compile]
+def wasmCompile (code : String) (fileName : String := "<input>") : IO UInt32 := do
+  IO.eprintln s!"[WASM DEBUG] wasmCompile called with code length={code.length}, fileName={fileName}"
+  IO.eprintln "[WASM DEBUG] Getting or creating environment..."
+  let env ← getOrCreateWasmEnv
+  IO.eprintln "[WASM DEBUG] Environment ready"
+
+  IO.eprintln "[WASM DEBUG] Creating input context..."
+  let inputCtx := Parser.mkInputContext code fileName
+  IO.eprintln "[WASM DEBUG] Input context created"
+
+  let opts : Options := {}
+  let cmdState := Elab.Command.mkState env {} opts
+
+  -- Elaborate synchronously with `Frontend.processCommands` — a plain loop over
+  -- `Command.elabCommandTopLevel` — rather than `Elab.IO.processCommands`. The
+  -- latter drives elaboration through the language-server snapshot/task
+  -- infrastructure, which spawns elaboration tasks. In the single-threaded WASM
+  -- worker those tasks are never drained, leaving the runtime in a state where
+  -- the *next* `lean_wasm_compile` call fails immediately. The synchronous loop
+  -- creates no tasks, so the cached environment stays reusable across compiles.
+  let frontendCtx : Elab.Frontend.Context := { inputCtx }
+  let frontendState : Elab.Frontend.State :=
+    { commandState := cmdState, parserState := {}, cmdPos := 0 }
+  -- `Command.elabCommandTopLevel` resets `commandState.messages` at the start of
+  -- every command, so the final state holds only the last command's messages.
+  -- Collect the log after each command instead of reading the end state.
+  let collect : Elab.Frontend.FrontendM MessageLog := do
+    let mut acc : MessageLog := {}
+    let mut done := false
+    while !done do
+      done := (← Elab.Frontend.processCommand)
+      acc := acc ++ (← Elab.Frontend.getCommandState).messages
+    return acc
+  let (msgLog, _s) ← StateRefT'.run (ReaderT.run collect frontendCtx) frontendState
+
+  -- Output messages as JSON
+  let messages := msgLog.toList
+  IO.eprintln s!"[WASM DEBUG] Processing {messages.length} messages..."
+  for msg in messages do
+    -- Convert to interactive diagnostic, then to plain diagnostic for JSON
+    let interactiveDiag ← Widget.msgToInteractiveDiagnostic inputCtx.fileMap msg false
+    let diag := interactiveDiag.toDiagnostic
+    -- Add extra fields for WASM consumers
+    let json := Json.mkObj [
+      ("fileName", Json.str msg.fileName),
+      ("pos", Json.mkObj [("line", msg.pos.line), ("column", msg.pos.column)]),
+      ("endPos", match msg.endPos with
+        | some p => Json.mkObj [("line", p.line), ("column", p.column)]
+        | none => Json.null),
+      ("severity", match msg.severity with
+        | .error => "error" | .warning => "warning" | .information => "information"),
+      ("caption", msg.caption),
+      ("data", diag.message),
+      ("isSilent", msg.isSilent),
+      ("keepFullRange", msg.keepFullRange),
+      ("kind", Json.str msg.kind.toString)
+    ]
+    IO.println json.compress
+
+  -- Return success/failure
+  let hasErrors := messages.any (·.severity == .error)
+  IO.eprintln s!"[WASM DEBUG] Done, hasErrors={hasErrors}"
+  return if hasErrors then 1 else 0
+
+/--
+Reset the WASM environment cache.
+Call this if you need to re-import modules (e.g., after changing search paths).
+-/
+@[export lean_wasm_reset]
+def wasmReset : IO Unit := do
+  wasmEnvCache.set none
+  IO.println "[WASM] Environment cache cleared"
+
 /-- Whether Lean was built with an address sanitizer enabled. -/
 @[extern "lean_internal_has_address_sanitizer"]
 opaque Internal.hasAddressSanitizer (_ : Unit) : Bool
@@ -495,11 +613,14 @@ def shellMain (args : List String) (opts : ShellOptions) : IO UInt32 := do
       IO.eprintln "Expected exactly one file name"
       displayHelp (useStderr := true)
       return 1
+  IO.println s!"[DEBUG:I] fileName = {fileName}"
+  IO.println "[DEBUG:I] Reading file contents"
   let contents ← decodeLossyUTF8 <$> do
     if opts.useStdin then
       (← IO.getStdin).readBinToEnd
     else
       IO.FS.readBinFile fileName
+  IO.println s!"[DEBUG:I] contents length = {contents.length}"
   if opts.onlyDeps then
     Elab.printImports contents fileName
     return 0
@@ -521,7 +642,9 @@ def shellMain (args : List String) (opts : ShellOptions) : IO UInt32 := do
       pure (contents.sliceFrom endLinePos).copy
     else
       pure contents
+  IO.println "[DEBUG:J] Loading module setup"
   let setup? ← opts.setupFileName?.mapM ModuleSetup.load
+  IO.println s!"[DEBUG:J] setup? = {setup?.isSome}"
   let mainModuleName ←
     if let some setup := setup? then
       pure setup.name
@@ -533,9 +656,12 @@ def shellMain (args : List String) (opts : ShellOptions) : IO UInt32 := do
           throw e
     else
       pure `_stdin
+  IO.println s!"[DEBUG:J] mainModuleName = {mainModuleName}"
+  IO.println "[DEBUG:K] Calling Elab.runFrontend"
   let env? ← Elab.runFrontend contents opts.leanOpts fileName mainModuleName
     opts.trustLevel opts.oleanFileName? opts.ileanFileName? opts.jsonOutput opts.errorOnKinds
     #[] opts.printStats setup?
+  IO.println s!"[DEBUG:K] runFrontend completed, env? = {env?.isSome}"
   if let some env := env? then
     if opts.run then
       return ← runMain env opts.leanOpts args

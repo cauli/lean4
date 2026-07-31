@@ -130,15 +130,29 @@ endif()
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Emscripten")
     # TODO(WN): code size/performance tradeoffs
-    # - we're using -O3; it's /okay/
-    # - -Oz produces quite slow code
+    # - we're using -O3; it's /okay/ (param "-03" is set in LEANC_FLAGS)
+    # - "-Oz" produces quite slow code
     # - system libraries such as OpenGL are included in the JS but shouldn't be
     # - we need EMSCRIPTEN_KEEPALIVE annotations on exports to run meta-dce (-s MAIN_MODULE=2)
+    # - we disable "-flto" because it uses too much memory (we would need more RAM in the CI runner)
 
     # From https://emscripten.org/docs/compiling/WebAssembly.html#backends:
     # > The simple and safe thing is to pass all -s flags at both compile and link time.
-    set(EMSCRIPTEN_SETTINGS "-s ALLOW_MEMORY_GROWTH=1 -fwasm-exceptions -pthread -flto")
-    string(APPEND LEANC_EXTRA_CC_FLAGS " -pthread")
+    set(EMSCRIPTEN_SETTINGS "-sALLOW_MEMORY_GROWTH=0 -sDISABLE_EXCEPTION_CATCHING=0 -pthread -mtail-call")
+
+    # EMSCRIPTEN_DEBUG: Enable readable function names and assertions for debugging
+    # This makes the WASM larger and slower but shows actual function names in stack traces
+    # instead of mangled names like "invoke_III"
+    # option(EMSCRIPTEN_DEBUG "Enable debug-friendly WASM build with readable function names" ON)
+    # if(EMSCRIPTEN_DEBUG)
+    #     message(STATUS "Emscripten debug mode: enabling readable function names and assertions")
+    #     # --profiling-funcs keeps function names without full debug info
+    #     # -sASSERTIONS=1 enables runtime assertions
+    #     # -g3 adds full debug info (optional, can use -g for less)
+    #     string(APPEND EMSCRIPTEN_SETTINGS " --profiling-funcs -sASSERTIONS=1 -g3")
+    # endif()
+
+    string(APPEND LEANC_EXTRA_CC_FLAGS " -D LEAN_EMSCRIPTEN ${EMSCRIPTEN_SETTINGS}")
     string(APPEND LEAN_EXTRA_CXX_FLAGS " -D LEAN_EMSCRIPTEN ${EMSCRIPTEN_SETTINGS}")
     string(APPEND LEAN_EXTRA_LINKER_FLAGS " ${EMSCRIPTEN_SETTINGS}")
 endif()
@@ -684,7 +698,9 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Emscripten")
   # We set `ERROR_ON_UNDEFINED_SYMBOLS=0` because our build of LibUV does not
   # define all symbols, see the comment about LibUV on WebAssembly further up
   # in this file.
-  string(APPEND LEAN_EXE_LINKER_FLAGS " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} -lnodefs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=1 -s LINKABLE=1 -s EXPORT_ALL=1 -s ERROR_ON_UNDEFINED_SYMBOLS=0")
+  # PTHREAD_POOL_SIZE=4 creates a pool of 4 workers for thread spawning
+  # This generates lean.worker.js alongside lean.js
+  string(APPEND LEAN_EXE_LINKER_FLAGS " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} -lnodefs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=1 -s LINKABLE=1 -s EXPORT_ALL=1 -s ERROR_ON_UNDEFINED_SYMBOLS=0 -sPTHREAD_POOL_SIZE=4")
 endif()
 
 # Build the compiler using the bootstrapped C sources for stage0, and use
@@ -773,8 +789,14 @@ endif()
 
 # use Bash version for building, use Lean version in bin/ for tests & distribution
 configure_file("${LEAN_SOURCE_DIR}/bin/leanc.in" "${CMAKE_BINARY_DIR}/leanc.sh" @ONLY)
-if(${STAGE} GREATER 0 AND EXISTS ${LEAN_SOURCE_DIR}/Leanc.lean AND NOT ${CMAKE_SYSTEM_NAME} MATCHES "Emscripten")
+
+# Copy Leanc.lean source so Lake can build the Leanc library (needed for all platforms)
+if(${STAGE} GREATER 0 AND EXISTS ${LEAN_SOURCE_DIR}/Leanc.lean)
   configure_file("${LEAN_SOURCE_DIR}/Leanc.lean" "${CMAKE_BINARY_DIR}/leanc/Leanc.lean" @ONLY)
+endif()
+
+# Build the leanc binary (not needed for Emscripten because it uses emcc directly)
+if(${STAGE} GREATER 0 AND EXISTS ${LEAN_SOURCE_DIR}/Leanc.lean AND NOT ${CMAKE_SYSTEM_NAME} MATCHES "Emscripten")
   add_custom_target(leanc ALL
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/leanc
     DEPENDS leanshared
@@ -865,6 +887,14 @@ if(${CMAKE_BUILD_TYPE} MATCHES "Debug|Release|RelWithDebInfo|MinSizeRel")
   set(CMAKE_BUILD_TYPE_TOML "${CMAKE_BUILD_TYPE}")
 else()
   set(CMAKE_BUILD_TYPE_TOML "Release")
+endif()
+
+# For Emscripten cross-compilation, Lake needs to know the extra compiler flags
+# since it gets its default flags from the lean binary (which is from the previous stage)
+# We do this because we need the "-pthreads" flag in Emscripten, otherwise the build fails.
+if(${CMAKE_SYSTEM_NAME} MATCHES "Emscripten")
+  toml_escape("${EMSCRIPTEN_SETTINGS}" EMSCRIPTEN_SETTINGS_TOML)
+  set(LEAN_EXTRA_LAKEFILE_TOML "moreLeancArgs = [${EMSCRIPTEN_SETTINGS_TOML}]")
 endif()
 
 if(USE_LAKE)

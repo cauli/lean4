@@ -1929,15 +1929,23 @@ private def ImportedModule.publicModule? (self : ImportedModule) : Option Module
     -- (should not have any constants)
     self.irData?.map (·.1)
 
-private def ImportedModule.getData? (self : ImportedModule) (level : OLeanLevel) : Option ModuleData := do
+private def ImportedModule.getData? (self : ImportedModule) (level : OLeanLevel) : Option ModuleData :=
   -- Without the module system, we only have the exported level.
-  let level := if (← self.publicModule?).isModule then level else .exported
+  -- Use .exported as fallback if publicModule? is unavailable (e.g., WASM with partial files)
+  let level := match self.publicModule? with
+    | some mod => if mod.isModule then level else .exported
+    | none => .exported
   self.parts[level.ctorIdx]?.map (·.1)
 
 /-- The main module data that will eventually be used to construct the kernel environment. -/
 private def ImportedModule.mainModule? (self : ImportedModule) : Option ModuleData :=
   if self.needsData then
-    self.getData? (if self.importAll then .private else .exported)
+    let level := if self.importAll then OLeanLevel.private else .exported
+    -- Fall back to lower levels if requested level doesn't exist.
+    -- This handles builds that only include base .olean files (e.g., WASM/Emscripten).
+    -- Also try directly accessing parts[0] as last resort for partial builds.
+    self.getData? level <|> self.getData? .server <|> self.getData? .exported
+      <|> self.parts[0]?.map (·.1)
   else
     self.irData?.map (·.1)
 
@@ -1991,6 +1999,11 @@ private def findOLeanParts (mod : Name) : IO (Array System.FilePath) := do
     let pFile := OLeanLevel.private.adjustFileName mFile
     if (← pFile.pathExists) then
       fnames := fnames.push pFile
+  -- Debug: log problematic module
+  if mod.toString.contains "String.Lemmas.Basic" then
+    IO.println s!"[DEBUG:FIND] {mod}: found {fnames.size} parts"
+    for f in fnames do
+      IO.println s!"  - {f}"
   return fnames
 
 partial def importModulesCore
@@ -2063,13 +2076,24 @@ where
   go (imports : Array Import) (importAll isExported needsData needsIRTrans : Bool) := do
     for i in imports do
       -- `B > none`?
-      let needsData := needsData && (i.isExported || importAll)
+      -- In Emscripten, we ALWAYS need .olean data (no IR fallback), so keep needsData=true
+      let needsData := if System.Platform.isEmscripten then
+        needsData
+      else
+        needsData && (i.isExported || importAll)
+      -- Debug problematic module
+      if i.module.toString.contains "String.Lemmas.Basic" then
+        IO.println s!"[DEBUG:GO] {i.module}: needsData={needsData}, importAll={importAll}, isExported={isExported}"
       -- `B ≥ privateAll`?
       let importAll := globalLevel == .private || importAll && i.importAll
       -- `B ≥ public`?
       let isExported := isExported && i.isExported
       let needsIRTrans := needsIRTrans || needsData && i.isMeta
-      let needsIR := needsIRTrans || importAll || globalLevel > .exported
+      -- In Emscripten, skip IR loading entirely (too large for browser)
+      let needsIR := if System.Platform.isEmscripten then
+        false
+      else
+        needsIRTrans || importAll || globalLevel > .exported
       if !needsData && !needsIR then
         continue
 
@@ -2091,7 +2115,8 @@ where
         let needsIR := needsIRTrans || importAll
         let irPhases := if irPhases == mod.irPhases then irPhases else .all
         let parts ← if needsData && mod.parts.isEmpty then loadData i else pure mod.parts
-        let irData? ← if needsIR && mod.irData?.isNone then loadIR? i else pure mod.irData?
+        -- In Emscripten, skip IR loading
+        let irData? ← if needsIR && mod.irData?.isNone && !System.Platform.isEmscripten then loadIR? i else pure mod.irData?
         if importAll != mod.importAll || isExported != mod.isExported ||
             needsIRTrans != mod.needsIRTrans || needsData != mod.needsData || irPhases != mod.irPhases then
           modify fun s => { s with moduleNameMap := s.moduleNameMap.insert i.module { mod with
@@ -2102,7 +2127,8 @@ where
 
       -- newly discovered module
       let parts ← if needsData then loadData i else pure #[]
-      let irData? ← if needsIR then loadIR? i else pure none
+      -- In Emscripten, skip IR loading
+      let irData? ← if needsIR && !System.Platform.isEmscripten then loadIR? i else pure none
       let mod := { i with importAll, isExported, irPhases, parts, irData?, needsIRTrans, needsData }
       goRec mod
       modify fun s => { s with
@@ -2188,14 +2214,33 @@ def finalizeImport (s : ImportState) (imports : Array Import) (opts : Options) (
     (leakEnv loadExts : Bool) (level := OLeanLevel.private) (isModule := level != .private) :
     IO Environment := do
   let modules := s.moduleNames.filterMap (s.moduleNameMap[·]?)
-  let moduleData ← modules.mapM fun mod => do
+  if System.Platform.isEmscripten then
+    IO.println s!"[DEBUG:PROGRESS] Loading {modules.size} modules..."
+  let moduleData ← modules.mapIdxM fun idx mod => do
+    -- Progress counter for Emscripten (every 50 modules or on error)
+    let i : Nat := idx
+    if System.Platform.isEmscripten && (i % 50 == 0 || i + 1 == modules.size) then
+      IO.println s!"[DEBUG:PROGRESS] {i + 1}/{modules.size}: {mod.module}"
     let some data := mod.mainModule? |
       throw <| IO.userError s!"missing data file for module {mod.module}"
     return data
-  let irData ← modules.mapM fun mod => do
-    let some data := mod.interpData? level |
-      throw <| IO.userError s!"missing IR data file for module {mod.module}"
-    return data
+  -- In Emscripten, IR files are not available (too large for browser)
+  -- Return array of empty ModuleData to match modules.size
+  let irData ← if System.Platform.isEmscripten then
+    -- Create empty ModuleData for each module (same size as modules array)
+    pure <| modules.map fun _ => {
+      isModule := false
+      imports := #[]
+      constNames := #[]
+      constants := #[]
+      extraConstNames := #[]
+      entries := #[]
+    }
+  else
+    modules.mapM fun mod => do
+      let some data := mod.interpData? level |
+        throw <| IO.userError s!"missing IR data file for module {mod.module}"
+      return data
   let numPrivateConsts := moduleData.foldl (init := 0) fun numPrivateConsts data =>
     numPrivateConsts + data.constants.size
   let numPrivateConsts := irData.foldl (init := numPrivateConsts) fun numPrivateConsts data =>
