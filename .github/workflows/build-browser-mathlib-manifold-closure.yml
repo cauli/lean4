@@ -74,7 +74,6 @@ jobs:
           done
 
           test "$(jq -r '.fullMathlib' "$LOCK")" = false
-          git merge-base --is-ancestor "$RUN_COMMIT" "$WORKFLOW_COMMIT"
           git merge-base --is-ancestor "$LEAN_UPSTREAM_COMMIT" "$RUN_COMMIT"
 
           echo "LEAN_COMMIT=$RUN_COMMIT" >> "$GITHUB_ENV"
