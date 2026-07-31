@@ -162,6 +162,9 @@ jobs:
             test "$(git -C "$TARGET" rev-parse HEAD)" = "$REV"
           done < <(jq -r '.packages[] | [.name, .url, .rev] | @tsv' mathlib4/lake-manifest.json)
 
+      - name: Prepare Lean-only browser workspace
+        run: node script/prepare-browser-mathlib-workspace.mjs "$PWD/mathlib4"
+
       - name: Build the manifold dependency closure with native i386 Lean
         run: |
           cd mathlib4
