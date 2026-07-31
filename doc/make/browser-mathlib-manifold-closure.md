@@ -29,10 +29,12 @@ The uploaded `manifest.json` records those pins, all transitive Lake package
 revisions, the two input artifact names, every packaged file, and the SHA-256
 of each pack. `SHA256SUMS` covers the manifest and packs.
 
-The workflow rejects a run id from another repository, another Lean commit, or
-an unsuccessful CI run. Ordinary x86-64 Mathlib cache archives are deliberately
-not used: this browser build needs pointer-width-compatible `.olean` files from
-the exact Lean fork commit.
+The workflow rejects a run id from another repository, an unrelated Lean
+history, or a run whose `Web Assembly` or `Linux 32bit` job did not succeed. It
+checks out the run's exact Lean source revision even when the workflow itself
+has since received a packaging-only fix. Ordinary x86-64 Mathlib cache archives
+are deliberately not used: this browser build needs pointer-width-compatible
+`.olean` files from the exact Lean fork commit.
 
 To package another part of Mathlib, copy the lock and workflow under a name that
 describes its root or purpose, then change `mathlib.roots`. Reserve names such
