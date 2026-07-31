@@ -149,6 +149,19 @@ jobs:
           test "$(git -C mathlib4 rev-parse HEAD)" = "$MATHLIB_COMMIT"
           test "$(cat mathlib4/lean-toolchain)" = "$LEAN_TOOLCHAIN"
 
+      - name: Checkout exact Lake dependency revisions
+        run: |
+          mkdir -p mathlib4/.lake/packages
+          while IFS=$'\t' read -r NAME URL REV
+          do
+            TARGET="mathlib4/.lake/packages/$NAME"
+            git init "$TARGET"
+            git -C "$TARGET" remote add origin "$URL"
+            git -C "$TARGET" fetch --depth=1 origin "$REV"
+            git -C "$TARGET" checkout --detach FETCH_HEAD
+            test "$(git -C "$TARGET" rev-parse HEAD)" = "$REV"
+          done < <(jq -r '.packages[] | [.name, .url, .rev] | @tsv' mathlib4/lake-manifest.json)
+
       - name: Build the manifold dependency closure with native i386 Lean
         run: |
           cd mathlib4
