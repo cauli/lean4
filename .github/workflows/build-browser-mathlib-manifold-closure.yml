@@ -147,6 +147,14 @@ jobs:
           git -C mathlib4 fetch --depth=1 origin "$MATHLIB_COMMIT"
           git -C mathlib4 checkout --detach FETCH_HEAD
           test "$(git -C mathlib4 rev-parse HEAD)" = "$MATHLIB_COMMIT"
+
+      - name: Apply pinned Mathlib compatibility patch
+        run: |
+          PATCH="$GITHUB_WORKSPACE/.github/patches/mathlib-de3a9cf330-lean62b6-finite-type.patch"
+          test "$(git -C mathlib4 rev-parse HEAD)" = "$MATHLIB_COMMIT"
+          git -C mathlib4 apply --check "$PATCH"
+          git -C mathlib4 apply "$PATCH"
+          git -C mathlib4 diff --check
           test "$(cat mathlib4/lean-toolchain)" = "$LEAN_TOOLCHAIN"
 
       - name: Checkout exact Lake dependency revisions
