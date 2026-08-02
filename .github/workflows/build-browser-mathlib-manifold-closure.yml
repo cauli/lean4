@@ -1,7 +1,7 @@
 name: Build browser Mathlib manifold closure
 
 # This is not a full Mathlib build. It packages the transitive dependency
-# closure rooted at Mathlib.Geometry.Manifold.IsManifold.Basic for wasm32 Lean.
+# closure rooted at the Mathlib modules listed in the lock file for wasm32 Lean.
 #
 # The regular Web Assembly and Linux 32bit jobs stay unchanged. This manually
 # dispatched sidecar consumes both artifacts from one completed CI run:
@@ -53,7 +53,7 @@ jobs:
           LEAN_TOOLCHAIN=$(jq -r '.lean.toolchain' "$LOCK")
           MATHLIB_REPOSITORY=$(jq -r '.mathlib.repository' "$LOCK")
           MATHLIB_COMMIT=$(jq -r '.mathlib.commit' "$LOCK")
-          ROOT_MODULE=$(jq -r '.mathlib.roots | if length == 1 then .[0] else error("this workflow expects one root module") end' "$LOCK")
+          ROOT_MODULES_JSON=$(jq -c '.mathlib.roots | if length > 0 then . else error("at least one root module is required") end' "$LOCK")
           LAYER_ID=$(jq -r '.layerId' "$LOCK")
 
           RUN_REPOSITORY=$(gh api "repos/${{ github.repository }}/actions/runs/$TOOLCHAIN_RUN_ID" --jq '.repository.full_name')
@@ -88,7 +88,7 @@ jobs:
           echo "MATHLIB_REPOSITORY=$MATHLIB_REPOSITORY" >> "$GITHUB_ENV"
           echo "MATHLIB_COMMIT=$MATHLIB_COMMIT" >> "$GITHUB_ENV"
           echo "MATHLIB_SHORT=${MATHLIB_COMMIT:0:10}" >> "$GITHUB_ENV"
-          echo "ROOT_MODULE=$ROOT_MODULE" >> "$GITHUB_ENV"
+          echo "ROOT_MODULES_JSON=$ROOT_MODULES_JSON" >> "$GITHUB_ENV"
           echo "LAYER_ID=$LAYER_ID" >> "$GITHUB_ENV"
           echo "lean_commit=$RUN_COMMIT" >> "$GITHUB_OUTPUT"
 
@@ -168,17 +168,23 @@ jobs:
       - name: Build the manifold dependency closure with native i386 Lean
         run: |
           cd mathlib4
-          lake build "$ROOT_MODULE"
+          mapfile -t ROOT_MODULES < <(jq -r '.[]' <<< "$ROOT_MODULES_JSON")
+          lake build "${ROOT_MODULES[@]}"
 
       - name: Package the browser dependency closure
         run: |
+          ROOT_ARGS=()
+          while IFS= read -r ROOT_MODULE
+          do
+            ROOT_ARGS+=(--root "$ROOT_MODULE")
+          done < <(jq -r '.[]' <<< "$ROOT_MODULES_JSON")
           node script/package-browser-library.mjs \
             --workspace "$PWD/mathlib4" \
             --core "$PWD/toolchains/wasm32/lib/lean" \
             --lean-source "$PWD/lean-toolchain-source/src" \
             --output "$PWD/browser-mathlib-manifold-closure/packs" \
             --manifest "$PWD/browser-mathlib-manifold-closure/manifest.json" \
-            --root "$ROOT_MODULE" \
+            "${ROOT_ARGS[@]}" \
             --layer-id "$LAYER_ID" \
             --lean-repository "${{ github.repository }}" \
             --lean-commit "$LEAN_COMMIT" \
@@ -198,9 +204,13 @@ jobs:
           }
           if (manifest.lean.commit !== process.argv[2]) throw new Error("Lean pin changed")
           if (manifest.mathlib.commit !== process.argv[3]) throw new Error("Mathlib pin changed")
-          if (!manifest.mathlib.roots.includes(process.argv[4])) throw new Error("root module is missing")
-          if (!manifest.files.includes(process.argv[4].replaceAll(".", "/") + ".olean")) {
-            throw new Error("root module olean is missing")
+          const roots = JSON.parse(process.argv[4])
+          if (roots.length === 0) throw new Error("root module list is empty")
+          for (const root of roots) {
+            if (!manifest.mathlib.roots.includes(root)) throw new Error(`root module is missing: ${root}`)
+            if (!manifest.files.includes(root.replaceAll(".", "/") + ".olean")) {
+              throw new Error(`root module olean is missing: ${root}`)
+            }
           }
           if (manifest.packs.length === 0) throw new Error("no artifact packs were produced")
           console.log(`${manifest.packagedModules} modules in ${manifest.packs.length} packs`)
@@ -208,7 +218,7 @@ jobs:
             browser-mathlib-manifold-closure/manifest.json \
             "$LEAN_COMMIT" \
             "$MATHLIB_COMMIT" \
-            "$ROOT_MODULE"
+            "$ROOT_MODULES_JSON"
           cd browser-mathlib-manifold-closure
           sha256sum manifest.json packs/*.pack > SHA256SUMS
           sha256sum --check SHA256SUMS
