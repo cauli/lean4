@@ -150,9 +150,13 @@ jobs:
           cd build
           # arguments passed to `cmake`
           OPTIONS=(-DWFAIL=ON)
-          if [[ -n '${{ matrix.release }}' ]]; then
+          if [[ -n '${{ matrix.release }}' && -z '${{ matrix.wasm }}' ]]; then
             # this also enables githash embedding into stage 1 library, which prohibits reusing
-            # `.olean`s across commits, so we don't do it in the fast non-release CI
+            # `.olean`s across commits, so we don't do it in the fast non-release CI.
+            # The wasm binary skips it as well: its consumers pin the Lean commit of every
+            # library layer in their own manifests, and a runtime-only change (exception
+            # model, link flags) must be able to load the layers already compiled and
+            # deployed for the same Lean sources.
             OPTIONS+=(-DCHECK_OLEAN_VERSION=ON)
           fi
           if [[ -n '${{ matrix.cross_target }}' ]]; then

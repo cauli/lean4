@@ -25,7 +25,7 @@ emcc -o "$OUT/lean.js" \
   "$KIT/libleanmain.a" \
   "$KIT/libleanshell.a" \
   -L "$KIT" -lleancpp -lInit -lStd -lLean -lnodefs.js -lleanrt "$KIT/libuv.a" -lstdc++ \
-  -sDISABLE_EXCEPTION_CATCHING=0 -pthread \
+  -fwasm-exceptions -pthread \
   -sALLOW_MEMORY_GROWTH=1 \
   -sINCOMING_MODULE_JS_API=print,printErr,setStatus,locateFile,mainScriptUrlOrBlob,INITIAL_MEMORY,wasmMemory,noInitialRun,preRun,onRuntimeInitialized,onAbort,onExit,arguments,ENV \
   -s EXIT_RUNTIME=1 -s MAIN_MODULE=2 -s ERROR_ON_UNDEFINED_SYMBOLS=0 \

@@ -202,16 +202,18 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
     # realization, and without LEAN_MULTI_THREAD the task manager is a no-op,
     # so Promise.new panics by design. A single-thread (no COOP/COEP, phone-
     # sized) build needs a sequential task manager upstream first.
-    # JS-based EH: -fwasm-exceptions still miscompiles this tree on emsdk 6 —
-    # the first compile traps `unreachable` inside readModuleDataPartsOfMod
-    # (exception-heavy part-probing) in 10ms, silently, heap tiny, in both the
-    # pthread and single-thread configs; the native i386 build of the same
-    # sources is fine. Same class of bug 1aa6036d1f dodged on emcc 4.0.22.
+    # Native wasm EH. With the JS-emulated model every potentially-throwing
+    # call runs through a JS invoke_* trampoline, so deep kernel recursion
+    # (a `decide` over a large computation) consumes JavaScript stack, which a
+    # browser worker cannot enlarge, and dies with RangeError while the 16MB
+    # wasm stack is nearly empty. The trap that once looked like a wasm-EH
+    # miscompile (`unreachable` inside readModuleDataPartsOfMod on first
+    # compile) was the extern world-token arity mismatch fixed in b6b649fe641.
     # EMSCRIPTEN_SETTINGS holds only flags that change CODEGEN and therefore
     # must reach every compile: -pthread (atomics/TLS) and the EH mode. Flags
     # that only shape the final JS/wasm output live in EMSCRIPTEN_LINK_SETTINGS
     # so that link-only experiments keep the ccache'd objects valid.
-    set(EMSCRIPTEN_SETTINGS "-sDISABLE_EXCEPTION_CATCHING=0 -pthread")
+    set(EMSCRIPTEN_SETTINGS "-fwasm-exceptions -pthread")
     set(EMSCRIPTEN_LINK_SETTINGS "-sALLOW_MEMORY_GROWTH=1 -sINCOMING_MODULE_JS_API=print,printErr,setStatus,locateFile,mainScriptUrlOrBlob,INITIAL_MEMORY,wasmMemory,noInitialRun,preRun,onRuntimeInitialized,onAbort,onExit,arguments,ENV")
 
   # EMSCRIPTEN_DEBUG: Enable readable function names and assertions for debugging
