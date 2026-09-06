@@ -96,6 +96,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-multilib g++-multilib ccache libuv1-dev:i386 libssl-dev:i386 pkgconf:i386
         if: matrix.cmultilib
+      - name: Check Emscripten shell glue
+        if: matrix.wasm
+        run: python3 tests/wasm/check-shell-glue.py
       - name: Restore Cache
         id: restore-cache
         uses: actions/cache/restore@v6
@@ -153,7 +156,13 @@ jobs:
           # arguments passed to `cmake`
           # opt into `LEAN_HEADER_SNAPSHOTS` as suspected issue with incremental builds does not
           # affect CI
-          OPTIONS=(-DWFAIL=ON -DLEAN_HEADER_SNAPSHOTS=ON)
+          OPTIONS=(-DWFAIL=ON)
+          if [[ -n '${{ matrix.browser }}' ]]; then
+            # Native i386 snapshots cannot disambiguate overlapping saved dep ranges.
+            OPTIONS+=(-DLEAN_HEADER_SNAPSHOTS=OFF)
+          else
+            OPTIONS+=(-DLEAN_HEADER_SNAPSHOTS=ON)
+          fi
           if [[ -n '${{ matrix.release }}' ]]; then
             # this also enables githash embedding into stage 1 library, which prohibits reusing
             # `.olean`s across commits, so we don't do it in the fast non-release CI
@@ -217,9 +226,16 @@ jobs:
             export EM_COMPILER_WRAPPER=ccache
             export CCACHE_MAXSIZE=1600M
           fi
-          time make -C build $TARGET_STAGE -j$NPROC
+          if [[ -n '${{ matrix.browser }}' && -z '${{ matrix.wasm }}' ]]; then
+            # Lake accepts one compiler executable, not CMake's launcher prefix.
+            test -x /usr/lib/ccache/clang
+            time make -C build $TARGET_STAGE -j$NPROC LEAN_CC=/usr/lib/ccache/clang
+          else
+            time make -C build $TARGET_STAGE -j$NPROC
+          fi
       - name: Pack wasm link kit
-        if: matrix.wasm
+        id: link-kit
+        if: matrix.wasm && !cancelled()
         run: |
           # Everything the final `bin/lean.js` link consumes, so link-flag
           # experiments can relink locally (emsdk runs natively on any host)
@@ -236,7 +252,7 @@ jobs:
           ls -la linkkit/
           tar cf - linkkit | zstd -T0 --no-progress -o linkkit.tar.zst
       - uses: actions/upload-artifact@v7
-        if: matrix.wasm
+        if: matrix.wasm && !cancelled() && steps.link-kit.outcome == 'success'
         with:
           name: linkkit-${{ matrix.name }}
           path: linkkit.tar.zst
@@ -360,6 +376,7 @@ jobs:
           node --stack-size=8192 tests/wasm/bake-snapshot.cjs "build/$TARGET_STAGE" /tmp/slim-snapshot /tmp/slim-out
           node tests/wasm/browser-smoke.mjs "build/$TARGET_STAGE" /tmp/slim-out --init-only --snapshot=/tmp/slim-snapshot/init.snap
       - name: Check Binaries
+        if: matrix.binary-check
         run: ${{ matrix.binary-check }} lean-*/bin/* || true
       - name: Count binary symbols
         run: |

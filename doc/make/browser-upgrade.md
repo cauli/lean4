@@ -12,6 +12,9 @@ binary in Node and Chromium and the slim binary with the Init-only cases.
 Both variants also bake Init snapshots under Node and restore them in Chromium
 without library files, ensuring that the persistent API uses the snapshot.
 The native job also tests the persistent API and selected elaborator cases.
+Its elaborator tests run without the optional native header-snapshot fixture:
+serialized dependency ranges can overlap on i386. The separate WASM snapshot
+tests use self-contained snapshots and remain required.
 The broader upstream CI configuration stays separate from this fork workflow.
 
 Before changing a deployed browser application:
@@ -86,5 +89,9 @@ points needed by the interpreter; the slim variant uses the narrower set.
 Emscripten compilation uses ccache with a 1600 MB limit. Cache keys include the
 host architecture, SDK version, and relevant build flags. Already compressed
 artifacts are uploaded without a second compression pass. Link kits allow
-export and linker experiments without recompiling Lean. Compare successful CI
+export and linker experiments without recompiling Lean, and are preserved after
+a link failure when all archives and export lists were produced. Native Lake C
+compilation uses ccache's compiler wrapper because Lake bypasses CMake's launcher.
+An early Emscripten check compiles and runs the shell's filesystem setup before
+the full build. Compare successful CI
 job durations before claiming a speedup; the first run uses a cold cache.

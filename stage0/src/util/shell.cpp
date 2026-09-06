@@ -291,10 +291,15 @@ extern "C" LEAN_EXPORT int lean_main(int argc, char ** argv) {
     EM_ASM({
         if (typeof process !== "undefined" && process.release && process.release.name === "node") {
             if (process.env["LEAN_PATH"]) ENV["LEAN_PATH"] = process.env["LEAN_PATH"];
-            FS.mount(NODEFS, { root: "/home" }, "/home");
-            FS.mount(NODEFS, { root: "/tmp" }, "/tmp");
-            // macOS resolves the host's /tmp symlink before reporting cwd.
-            FS.chdir(process.cwd().replace(/^\/private\/tmp(?=\/|$)/, "/tmp"));
+            var nodeFS = require("fs");
+            var tempRoot = nodeFS.realpathSync("/tmp");
+            FS.mount(NODEFS, { root: nodeFS.realpathSync("/home") }, "/home");
+            FS.mount(NODEFS, { root: tempRoot }, "/tmp");
+            // NODEFS roots must be directories rather than host symlinks.
+            var cwd = process.cwd();
+            if (cwd === tempRoot || cwd.startsWith(tempRoot + "/"))
+                cwd = "/tmp" + cwd.slice(tempRoot.length);
+            FS.chdir(cwd);
         } else {
             for (var dir of ["/workspace", "/bin", "/lib/lean/library"]) FS.mkdirTree(dir);
             FS.chdir("/workspace");
