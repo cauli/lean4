@@ -334,7 +334,9 @@ jobs:
           ls -la "$dir"/bin-slim/
       - name: Test browser API with the native i386 toolchain
         if: matrix.browser && !matrix.wasm
-        run: build/$TARGET_STAGE/bin/lean --run tests/wasm/native-smoke.lean
+        run: |
+          python3 tests/wasm/cli-smoke.py "build/$TARGET_STAGE/bin/lean"
+          build/$TARGET_STAGE/bin/lean --run tests/wasm/native-smoke.lean
       - name: Test persistent WASM API in Node
         if: matrix.wasm
         timeout-minutes: 10
@@ -349,6 +351,14 @@ jobs:
           tests/wasm/node_modules/.bin/playwright install --with-deps chromium
           node tests/wasm/browser-smoke.mjs "build/$TARGET_STAGE"
           node tests/wasm/browser-smoke.mjs "build/$TARGET_STAGE" /tmp/slim-out --init-only
+      - name: Test WASM snapshot round trips
+        if: matrix.wasm
+        timeout-minutes: 10
+        run: |
+          node --stack-size=8192 tests/wasm/bake-snapshot.cjs "build/$TARGET_STAGE" /tmp/full-snapshot
+          node tests/wasm/browser-smoke.mjs "build/$TARGET_STAGE" --init-only --snapshot=/tmp/full-snapshot/init.snap
+          node --stack-size=8192 tests/wasm/bake-snapshot.cjs "build/$TARGET_STAGE" /tmp/slim-snapshot /tmp/slim-out
+          node tests/wasm/browser-smoke.mjs "build/$TARGET_STAGE" /tmp/slim-out --init-only --snapshot=/tmp/slim-snapshot/init.snap
       - name: Check Binaries
         run: ${{ matrix.binary-check }} lean-*/bin/* || true
       - name: Count binary symbols

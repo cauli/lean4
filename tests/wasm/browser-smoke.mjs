@@ -6,11 +6,16 @@ import { createHash } from 'node:crypto';
 import { chromium } from '@playwright/test';
 import walk from './artifact-files.cjs';
 
-const root = path.resolve(process.argv[2]);
-const bin = path.resolve(process.argv[3] || path.join(root, 'bin'));
+const args = process.argv.slice(2);
+if (!args[0]) throw new Error('expected a toolchain directory');
+const root = path.resolve(args.shift());
+const bin = path.resolve(args[0] && !args[0].startsWith('--') ? args.shift() : path.join(root, 'bin'));
+const initOnly = args.includes('--init-only');
+const memoryProbe = args.includes('--memory-probe');
+const snapshot = args.find(arg => arg.startsWith('--snapshot='))?.slice('--snapshot='.length);
 const here = path.dirname(fileURLToPath(import.meta.url));
 const library = path.join(root, 'lib/lean');
-const files = walk(library);
+const files = snapshot && initOnly ? [] : walk(library);
 const server = http.createServer((req, res) => {
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
   res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
@@ -20,13 +25,14 @@ const server = http.createServer((req, res) => {
   }
   if (req.url === '/files.json') {
     res.setHeader('Content-Type', 'application/json');
-    return res.end(JSON.stringify({ files, initOnly: process.argv[4] === '--init-only' }));
+    return res.end(JSON.stringify({ files, initOnly, memoryProbe, snapshot: Boolean(snapshot) }));
   }
   const url = decodeURIComponent(req.url);
   let target;
   if (url === '/bin/lean.js' || url === '/bin/lean.wasm') target = path.join(bin, path.basename(url));
   else if (url === '/checks.cjs' || url === '/browser-worker.js') target = path.join(here, url.slice(1));
   else if (url.startsWith('/lib/lean/') && files.includes(url.slice(10))) target = path.join(library, url.slice(10));
+  if (url === '/init.snap' && snapshot) target = path.resolve(snapshot);
   if (!target) { res.writeHead(404); return res.end(); }
   res.setHeader('Content-Type', target.endsWith('.wasm') ? 'application/wasm' :
     /\.(js|cjs)$/.test(target) ? 'text/javascript' : 'application/octet-stream');

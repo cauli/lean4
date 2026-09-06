@@ -133,9 +133,7 @@ jobs:
           test -f toolchains/wasm32/bin/lean.wasm
           test -f toolchains/wasm32/lib/lean/Init.olean
 
-          # Some i386 runner combinations print the value and then return a
-          # non-zero process status, so validate the captured value directly.
-          toolchains/linux32/bin/lean --githash > linux32-githash.txt || true
+          toolchains/linux32/bin/lean --githash > linux32-githash.txt
           grep -qx "$LEAN_COMMIT" linux32-githash.txt
 
           echo "$GITHUB_WORKSPACE/toolchains/linux32/bin" >> "$GITHUB_PATH"

@@ -17,7 +17,14 @@ var Module = {
   onAbort: why => postMessage({ error: String(why) }),
   onRuntimeInitialized: async () => {
     try {
-      const { files, initOnly } = await (await fetch('/files.json')).json();
+      const { files, initOnly, memoryProbe, snapshot } = await (await fetch('/files.json')).json();
+      if (snapshot) {
+        const response = await fetch('/init.snap');
+        if (!response.ok) throw new Error(`snapshot fetch: ${response.status}`);
+        Module.FS.mkdirTree('/snapshots');
+        Module.FS.writeFile('/snapshots/init.snap', new Uint8Array(await response.arrayBuffer()), { canOwn: true });
+        Module.FS.writeFile('/snapshots/init.snap.deps', '[]');
+      }
       let cursor = 0;
       await Promise.all(Array.from({ length: 6 }, async () => {
         while (cursor < files.length) {
@@ -31,8 +38,10 @@ var Module = {
       }));
       Module.ENV.LEAN_PATH = '/lib/lean';
       initializeLeanSmoke(Module);
+      const snapshotMs = snapshot ? loadLeanSmokeSnapshot(Module) : undefined;
       const timings = runLeanSmoke(Module, () => { const d = diagnostics; diagnostics = []; return d; }, { initOnly });
-      postMessage({ timings });
+      if (memoryProbe) timings.push(checkLeanSmokeHighAddress(Module, () => { const d = diagnostics; diagnostics = []; return d; }));
+      postMessage({ snapshotMs, timings });
     } catch (error) { postMessage({ error: String(error.stack || error) }); }
   },
 };

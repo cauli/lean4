@@ -215,10 +215,12 @@ int run_shell_main(int argc, char* argv[], object_ref const & shell_opts) {
         argc--;
         args = list_ref<string_ref>(string_ref(argv[argc]), args);
     }
-    return get_io_scalar_result<uint32>(lean_shell_main(
+    object_ref result = get_io_result<object_ref>(lean_shell_main(
         args.steal(),
         shell_opts.to_obj_arg()
     ));
+    // UInt32 is heap-boxed on 32-bit targets.
+    return unbox_uint32(result.raw());
 }
 
 extern "C" object* lean_init_search_path();
@@ -240,7 +242,7 @@ bool process_shell_option(object_ref & shell_opts, int opt, char const * optarg,
         dec_ref(r);
         return false;
     } else {
-        rc = unbox(io_result_get_error(r));
+        rc = unbox_uint32(io_result_get_error(r));
         dec_ref(r);
         return true;
     }

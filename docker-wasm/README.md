@@ -37,6 +37,21 @@ tests/wasm/node_modules/.bin/playwright install chromium
 node tests/wasm/browser-smoke.mjs build/wasm/stage1
 ```
 
+Check snapshot creation under Node and restoration in Chromium:
+
+```bash
+node --stack-size=8192 tests/wasm/bake-snapshot.cjs build/wasm/stage1 /tmp/lean-snapshot
+node tests/wasm/browser-smoke.mjs build/wasm/stage1 --init-only --snapshot=/tmp/lean-snapshot/init.snap
+```
+
+Snapshot-only checks stage no library files, so falling back to a cold import
+fails the test. Pass a binary directory after the toolchain directory to test
+a relinked variant; `bake-snapshot.cjs` accepts it after the output directory.
+
+The optional `--memory-probe` flag reserves 2 GiB and evaluates Lean input stored
+above the signed 32-bit address boundary. Use it for desktop 4 GiB heap
+experiments; it also works with `--init-only --snapshot=...` to avoid a cold import.
+
 The browser harness serves the artifacts with the headers required for shared
 memory:
 

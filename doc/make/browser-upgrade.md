@@ -9,6 +9,8 @@ Native compilation alone does not establish browser compatibility.
 The **Browser toolchain** workflow builds native i386 and WASM in parallel.
 Its final check requires both jobs to succeed. The WASM job tests the full
 binary in Node and Chromium and the slim binary with the Init-only cases.
+Both variants also bake Init snapshots under Node and restore them in Chromium
+without library files, ensuring that the persistent API uses the snapshot.
 The native job also tests the persistent API and selected elaborator cases.
 The broader upstream CI configuration stays separate from this fork workflow.
 
@@ -41,7 +43,10 @@ separate debug build:
 [PROFILE:IMPORT] t=34567ms phase=module-init:Some.Module elapsed=2345ms
 ```
 
-`finalizeImport.begin` starts the measurement. `module-data`, `constant-map`,
+`read-modules.begin` and `read-modules` bracket actual module loading and
+relocation. The existing module counter runs afterward, while selecting data
+for finalization; its duration does not measure file reading.
+`finalizeImport.begin` starts environment construction. `module-data`, `constant-map`,
 and `setImportedEntries` cover environment assembly. Persistent marking is
 reported separately before and after extension finalization. `extensions`
 contains the named extension hooks and `runInitAttrs`; hooks and module
