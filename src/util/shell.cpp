@@ -209,7 +209,10 @@ static char const * g_opt_str =
 ; // NOLINT
 
 namespace lean {
-extern "C" obj_res lean_shell_main(obj_arg args, obj_arg shell_opts, obj_arg world);
+// The compiled `Lean.shellMain` takes no world token; declaring one here
+// made wasm-ld route the call through a signature-mismatch stub once calls
+// became direct under native wasm exceptions.
+extern "C" obj_res lean_shell_main(obj_arg args, obj_arg shell_opts);
 int run_shell_main(int argc, char* argv[], object_ref const & shell_opts) {
     // #region agent log
 #ifdef LEAN_EMSCRIPTEN
@@ -247,7 +250,7 @@ int run_shell_main(int argc, char* argv[], object_ref const & shell_opts) {
 #ifdef LEAN_EMSCRIPTEN
     EM_ASM({ console.log("[DEBUG:G] Now calling lean_shell_main..."); });
 #endif
-    object * result = lean_shell_main(args_obj, opts_obj, lean_box(0));
+    object * result = lean_shell_main(args_obj, opts_obj);
     // #region agent log
 #ifdef LEAN_EMSCRIPTEN
     EM_ASM({ console.log("[DEBUG:G] lean_shell_main returned, processing result..."); });
