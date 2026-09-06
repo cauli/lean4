@@ -295,8 +295,8 @@ private def isQuotInit (env : Environment) : Bool :=
 
 /-- Type check given declaration and add it to the environment -/
 @[extern "lean_add_decl"]
-opaque addDeclCore (env : Environment) (maxHeartbeats : USize) (decl : @& Declaration)
-  (cancelTk? : @& Option IO.CancelToken) : Except Exception Environment
+opaque addDeclCore (env : Environment) (maxHeartbeats : USize) (maxRecDepth : USize)
+  (decl : @& Declaration) (cancelTk? : @& Option IO.CancelToken) : Except Exception Environment
 
 /--
 Add declaration to kernel without type checking it.
@@ -686,8 +686,8 @@ def unlockAsync (env : Environment) : Environment :=
   { env with asyncCtx? := none }
 
 @[extern "lean_elab_add_decl"]
-private opaque addDeclCheck (env : Environment) (maxHeartbeats : USize) (decl : @& Declaration)
-  (cancelTk? : @& Option IO.CancelToken) : Except Kernel.Exception Environment
+private opaque addDeclCheck (env : Environment) (maxHeartbeats : USize) (maxRecDepth : USize)
+  (decl : @& Declaration) (cancelTk? : @& Option IO.CancelToken) : Except Kernel.Exception Environment
 
 @[extern "lean_elab_add_decl_without_checking"]
 private opaque addDeclWithoutChecking (env : Environment) (decl : @& Declaration) :
@@ -699,15 +699,15 @@ Adds given declaration to the environment, type checking it unless `doCheck` is 
 This is a plumbing function for the implementation of `Lean.addDecl`, most users should use it
 instead.
 -/
-def addDeclCore (env : Environment) (maxHeartbeats : USize) (decl : @& Declaration)
-    (cancelTk? : @& Option IO.CancelToken) (doCheck := true) :
+def addDeclCore (env : Environment) (maxHeartbeats : USize) (maxRecDepth : USize)
+    (decl : @& Declaration) (cancelTk? : @& Option IO.CancelToken) (doCheck := true) :
     Except Kernel.Exception Environment := do
   if let some ctx := env.asyncCtx? then
     if let some n := decl.getTopLevelNames.find? (!ctx.mayContain ·) then
       throw <| .other s!"cannot add declaration {n} to environment as it is restricted to the \
         prefix {ctx.declPrefix}"
   let mut env ← if doCheck then
-    addDeclCheck env maxHeartbeats decl cancelTk?
+    addDeclCheck env maxHeartbeats maxRecDepth decl cancelTk?
   else
     addDeclWithoutChecking env decl
 
@@ -1528,7 +1528,6 @@ def registerEnvExtension {σ : Type} (mkInitial : IO σ)
 
 private def mkInitialExtensionStates : IO (Array EnvExtensionState) := EnvExtension.mkInitialExtStates
 
-@[export lean_mk_empty_environment]
 def mkEmptyEnvironment (trustLevel : UInt32 := 0) : IO Environment := do
   let initializing ← IO.initializing
   if initializing then throw (IO.userError "environment objects cannot be created during initialization")
@@ -1974,6 +1973,15 @@ private def ensureExtensionsArraySize (env : Environment) : IO Environment := do
   let exts ← EnvExtension.ensureExtensionsArraySize env.base.private.extensions
   return env.modifyCheckedAsync ({ · with extensions := exts })
 
+private def wasmImportNow : BaseIO Nat :=
+  if System.Platform.isEmscripten then IO.monoMsNow else pure 0
+
+private def reportWasmImport (phase : String) (started : Nat) (minMs : Nat := 0) : IO Unit := do
+  if System.Platform.isEmscripten then
+    let now ← IO.monoMsNow
+    if now - started >= minMs then
+      IO.println s!"[PROFILE:IMPORT] t={now}ms phase={phase} elapsed={now - started}ms"
+
 private partial def finalizePersistentExtensions (env : Environment) (mods : Array ModuleData) (opts : Options) : IO Environment := do
   loop 0 env
 where
@@ -1987,21 +1995,28 @@ where
       let s := extDescr.toEnvExtension.getState (asyncMode := .sync) env
       let prevSize := (← persistentEnvExtensionsRef.get).size
       let prevAttrSize ← getNumBuiltinAttributes
+      let hookStart ← wasmImportNow
       let newState ← extDescr.addImportedFn s.importedEntries { env := env, opts := opts }
+      reportWasmImport s!"extension:{extDescr.name}" hookStart 1000
       let mut env := extDescr.toEnvExtension.setState (asyncMode := .sync) env { s with state := newState }
       if extDescr.name == `Lean.regularInitAttr then
         -- Run `[init]` attributes now. We do this after `setState` so `runInitAttrs` can access
         -- `getModule(IR)Entries` but we should also do it before attempting to run user-defined
         -- extensions further down in `pExtDescrs` so they can access initialized declarations.
+        let initStart ← wasmImportNow
+        reportWasmImport "runInitAttrs.begin" initStart
         runInitAttrs env opts
+        reportWasmImport "runInitAttrs" initStart
       env ← ensureExtensionsArraySize env
       if (← persistentEnvExtensionsRef.get).size > prevSize || (← getNumBuiltinAttributes) > prevAttrSize then
+        let entriesStart ← wasmImportNow
         -- This branch is executed when `pExtDescrs[i]` is the extension associated with the `init` attribute, and
         -- a user-defined persistent extension is imported.
         -- Thus, we invoke `setImportedEntries` to update the array `importedEntries` with the entries for the new extensions.
         env := env.setCheckedSync { env.base.private with extensions := (← setImportedEntries env.base.private.extensions mods prevSize) }
         -- See comment at `updateEnvAttributesRef`
         env ← updateEnvAttributes env
+        reportWasmImport s!"new-extensions:{extDescr.name}" entriesStart 1000
       loop (i + 1) env
     else
       return env
@@ -2336,6 +2351,8 @@ def finalizeImport (s : ImportState) (imports : Array Import) (opts : Options) (
     -- If true, prefer loading `.ir.sig` over `.ir` unless `import all`ed; used by leanir
     (loadIRSig := false) :
     IO Environment := do
+  let importStart ← wasmImportNow
+  reportWasmImport "finalizeImport.begin" importStart
   let modules := s.moduleNames.filterMap (s.moduleNameMap[·]?)
   if System.Platform.isEmscripten then
     IO.println s!"[DEBUG:PROGRESS] Loading {modules.size} modules..."
@@ -2351,6 +2368,8 @@ def finalizeImport (s : ImportState) (imports : Array Import) (opts : Options) (
     let some data := mod.irData? loadIRSig |
       throw <| IO.userError s!"missing IR data file for module {mod.module}"
     return data
+  reportWasmImport "module-data" importStart
+  let mapStart ← wasmImportNow
   let numPrivateConsts := moduleData.foldl (init := 0) fun numPrivateConsts data =>
     numPrivateConsts + data.constants.size
   let numExtraConsts := irData.foldl (init := 0) fun numExtraConsts data =>
@@ -2391,6 +2410,8 @@ def finalizeImport (s : ImportState) (imports : Array Import) (opts : Options) (
               publicConstantMap := publicConstantMap.insert cname cinfo
             -- no need to check for duplicates again, `privateConstMap` should be a superset
 
+  reportWasmImport "constant-map" mapStart
+  let entriesStart ← wasmImportNow
   let exts ← mkInitialExtensionStates
   let privateConstants : ConstMap := SMap.fromHashMap privateConstantMap false
   let privateBase : Kernel.Environment := {
@@ -2419,6 +2440,7 @@ def finalizeImport (s : ImportState) (imports : Array Import) (opts : Options) (
     importRealizationCtx? := none
     serverBaseExts := (← setImportedEntries privateBase.extensions serverData)
   }
+  reportWasmImport "setImportedEntries" entriesStart
   if leakEnv then
     /- Mark persistent a first time before `finalizePersistentExtensions`, which
        avoids costly MT markings when e.g. an interpreter closure (which
@@ -2432,16 +2454,24 @@ def finalizeImport (s : ImportState) (imports : Array Import) (opts : Options) (
        `markPersistent` multiple times like this.
 
        Safety: There are no concurrent accesses to `env` at this point. -/
+    let markStart ← wasmImportNow
     env ← unsafe Runtime.markPersistent env
+    reportWasmImport "markPersistent.beforeExtensions" markStart
   if loadExts then
+    let extensionsStart ← wasmImportNow
+    reportWasmImport "extensions.begin" extensionsStart
     env ← finalizePersistentExtensions env moduleData opts
+    reportWasmImport "extensions" extensionsStart
     if leakEnv then
       /- Ensure the final environment including environment extension states is
         marked persistent as documented.
 
         Safety: There are no concurrent accesses to `env` at this point, assuming
         extensions' `addImportFn`s did not spawn any unbound tasks. -/
+      let markStart ← wasmImportNow
       env ← unsafe Runtime.markPersistent env
+      reportWasmImport "markPersistent.afterExtensions" markStart
+  reportWasmImport "finalizeImport" importStart
   return { env with importRealizationCtx? := some {
     -- safety: `RealizationContext` is private
     env := unsafe unsafeCast env
@@ -2644,7 +2674,7 @@ where
           return panic! s!"{c.constInfo.name} must be definition/theorem"
       -- realized kernel additions cannot be interrupted - which would be bad anyway as they can be
       -- reused between snapshots
-      kenv ← ofExcept <| kenv.addDeclCore 0 decl none
+      kenv ← ofExcept <| kenv.addDeclCore 0 0 decl none
     return kenv
 
 /-- Like `evalConst`, but first check that `constName` indeed is a declaration of type `typeName`.
@@ -2872,12 +2902,19 @@ Sets `Environment.isExporting` to the given value while executing `x`. No-op if
 -/
 def withExporting [Monad m] [MonadEnv m] [MonadFinally m] [MonadOptions m] (x : m α)
     (isExporting := true) : m α := do
-  let old := (← getEnv).isExporting
-  modifyEnv (·.setExporting isExporting)
-  try
+  let env ← getEnv
+  let old := env.isExporting
+  if !env.header.isModule || old == isExporting then
+    -- `setExporting` would be a no-op. We skip the `modifyEnv` calls because `modifyEnv`
+    -- invalidates caches (e.g., the whole `Meta.State.cache`), which is very costly when
+    -- this function is used in hot paths (e.g., equation lemma retrieval inside `grind`).
     x
-  finally
-    modifyEnv (·.setExporting old)
+  else
+    modifyEnv (·.setExporting isExporting)
+    try
+      x
+    finally
+      modifyEnv (·.setExporting old)
 
 /-- If `when` is true, sets `Environment.isExporting` to false while executing `x`. -/
 def withoutExporting [Monad m] [MonadEnv m] [MonadFinally m] [MonadOptions m] (x : m α)

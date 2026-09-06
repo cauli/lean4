@@ -1,0 +1,51 @@
+name: Browser toolchain
+
+on:
+  push:
+    branches: [master, reinstate-wasm, 'wasm-upstream-*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: browser-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  configure:
+    if: github.repository != 'leanprover/lean4'
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.value }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check export generation
+        run: python3 -m unittest discover -s tests/wasm -p 'test_*.py'
+      - id: matrix
+        run: echo "value=$(jq -c . .github/browser-build-matrix.json)" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: configure
+    uses: ./.github/workflows/build-template.yml
+    with:
+      config: ${{ needs.configure.outputs.matrix }}
+      nightly: ''
+      LEAN_VERSION_MAJOR: ''
+      LEAN_VERSION_MINOR: ''
+      LEAN_VERSION_PATCH: ''
+      LEAN_SPECIAL_VERSION_DESC: ''
+      RELEASE_TAG: ''
+
+  ready:
+    name: Browser toolchain ready
+    if: ${{ always() && github.repository != 'leanprover/lean4' }}
+    needs: [configure, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require both tested toolchains
+        env:
+          CONFIGURE_RESULT: ${{ needs.configure.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: test "$CONFIGURE_RESULT" = success && test "$BUILD_RESULT" = success

@@ -68,9 +68,7 @@ def getOrCreateWasmEnvFor (imports : Array Import) : IO Environment := do
   let key := imports.map (·.module)
   for (k, env) in (← wasmEnvCache.get) do
     if k == key then
-      IO.eprintln "[WASM DEBUG] getOrCreateWasmEnvFor: returning cached env"
       return env
-  IO.eprintln s!"[WASM DEBUG] getOrCreateWasmEnvFor: cache miss, importing {key}…"
   -- Mirror the frontend's header import (`processHeaderCore`, Elab/Import.lean):
   --  * `loadExts := true` loads the environment extensions — parser notation
   --    (e.g. `+`) and the instance database (e.g. `OfNat`). Without it (the
@@ -88,7 +86,6 @@ def getOrCreateWasmEnvFor (imports : Array Import) : IO Environment := do
   unsafe enableInitializersExecution
   let env ← importModules imports {} 0
     (level := .exported) (loadExts := true) (leakEnv := true)
-  IO.eprintln "[WASM DEBUG] getOrCreateWasmEnvFor: importModules completed"
   wasmEnvCache.modify (·.push (key, env))
   return env
 
@@ -105,8 +102,6 @@ Returns 0 on success, 1 on error. Output is written to stdout as JSON.
 -/
 @[export lean_wasm_compile]
 def wasmCompile (code : String) (fileName : String := "<input>") : IO UInt32 := do
-  IO.eprintln s!"[WASM DEBUG] wasmCompile called with code length={code.length}, fileName={fileName}"
-  IO.eprintln "[WASM DEBUG] Creating input context..."
   let inputCtx := Parser.mkInputContext code fileName
   -- Parse the file's header (its `import` lines) and import that closure into a
   -- per-import-set cached environment, then elaborate the body against it. This
@@ -114,9 +109,7 @@ def wasmCompile (code : String) (fileName : String := "<input>") : IO UInt32 := 
   -- repeat. `headerToImports` includes `Init` implicitly unless the file is
   -- `prelude`, matching the normal frontend.
   let (header, parserState, headerMessages) ← Parser.parseHeader inputCtx
-  IO.eprintln "[WASM DEBUG] Getting or creating environment for header imports..."
   let env ← getOrCreateWasmEnvFor (Elab.headerToImports header)
-  IO.eprintln "[WASM DEBUG] Environment ready"
 
   let opts : Options := {}
   let cmdState := Elab.Command.mkState env headerMessages opts
@@ -148,7 +141,6 @@ def wasmCompile (code : String) (fileName : String := "<input>") : IO UInt32 := 
 
   -- Output messages as JSON
   let messages := msgLog.toList
-  IO.eprintln s!"[WASM DEBUG] Processing {messages.length} messages..."
   for msg in messages do
     -- Convert to interactive diagnostic, then to plain diagnostic for JSON
     let interactiveDiag ← Widget.msgToInteractiveDiagnostic inputCtx.fileMap msg false
@@ -172,7 +164,6 @@ def wasmCompile (code : String) (fileName : String := "<input>") : IO UInt32 := 
 
   -- Return success/failure
   let hasErrors := messages.any (·.severity == .error)
-  IO.eprintln s!"[WASM DEBUG] Done, hasErrors={hasErrors}"
   return if hasErrors then 1 else 0
 
 /--
@@ -200,7 +191,6 @@ a regular import.
 @[export lean_wasm_load_snapshot]
 def wasmLoadSnapshot (path : String) : IO UInt32 := do
   try
-    IO.eprintln s!"[WASM DEBUG] wasmLoadSnapshot: loading {path}"
     let (cmdState, initModIdxs) ← unsafe Elab.loadHeaderSnapshotCmdState ⟨path⟩
     let env := cmdState.env.setMainModule .anonymous
     -- Replay the `[init]` attributes the imported modules would have run.
@@ -213,10 +203,9 @@ def wasmLoadSnapshot (path : String) : IO UInt32 := do
     unsafe enableInitializersExecution
     let key := env.header.imports.map (·.module)
     wasmEnvCache.modify (·.push (key, env))
-    IO.eprintln s!"[WASM DEBUG] wasmLoadSnapshot: cached env for {key}"
     return 0
   catch e =>
-    IO.eprintln s!"[WASM DEBUG] wasmLoadSnapshot failed: {e}"
+    IO.eprintln s!"WASM snapshot load failed: {e}"
     return 1
 
 /-- Whether Lean was built with an address sanitizer enabled. -/
@@ -369,12 +358,9 @@ private builtin_initialize timeout : Lean.Option Nat ←
 private builtin_initialize verbose : Lean.Option Bool ←
   Lean.Option.register `verbose {defValue := Internal.getDefaultVerbose ()}
 
-/--
-Returns the default options Lean was built with
-(i.e., those set in `stdlib_flags.h`).
--/
-@[extern "lean_internal_get_default_options"]
-opaque Internal.getDefaultOptions (_ : Unit) : Options
+/-- Returns any option overrides Lean was built with (i.e., those set in `stdlib_flags.h`). -/
+@[extern "lean_internal_get_option_overrides"]
+opaque Internal.getOptionOverrides (_ : Unit) : Options
 
 /--
 Returns the believer trust level of the Lean environment (i.e., `LEAN_BELIEVER_TRUST_LEVEL`).
@@ -396,7 +382,7 @@ def defaultNumThreads : UInt32 :=
   else 0
 
 structure ShellOptions where
-  leanOpts : Options := Internal.getDefaultOptions ()
+  leanOpts : Options := {}
   forwardedArgs : Array String := #[]
   component : ShellComponent := .frontend
   printPrefix : Bool := false
@@ -639,6 +625,7 @@ where
 
 @[export lean_shell_main]
 def shellMain (args : List String) (opts : ShellOptions) : IO UInt32 := do
+  let opts := { opts with leanOpts := opts.leanOpts.mergeBy (fun _ _ v => v) (Internal.getOptionOverrides ()) }
   if opts.printPrefix then
     IO.println (← getBuildDir)
     return 0
@@ -683,14 +670,11 @@ def shellMain (args : List String) (opts : ShellOptions) : IO UInt32 := do
       IO.eprintln "Expected exactly one file name"
       displayHelp (useStderr := true)
       return 1
-  IO.println s!"[DEBUG:I] fileName = {fileName}"
-  IO.println "[DEBUG:I] Reading file contents"
   let contents ← decodeLossyUTF8 <$> do
     if opts.useStdin then
       (← IO.getStdin).readBinToEnd
     else
       IO.FS.readBinFile fileName
-  IO.println s!"[DEBUG:I] contents length = {contents.length}"
   if opts.onlyDeps then
     Elab.printImports contents fileName
     return 0
@@ -712,9 +696,7 @@ def shellMain (args : List String) (opts : ShellOptions) : IO UInt32 := do
       pure (contents.sliceFrom endLinePos).copy
     else
       pure contents
-  IO.println "[DEBUG:J] Loading module setup"
   let setup? ← opts.setupFileName?.mapM ModuleSetup.load
-  IO.println s!"[DEBUG:J] setup? = {setup?.isSome}"
   let mainModuleName ←
     if let some setup := setup? then
       pure setup.name
@@ -726,8 +708,6 @@ def shellMain (args : List String) (opts : ShellOptions) : IO UInt32 := do
           throw e
     else
       pure `_stdin
-  IO.println s!"[DEBUG:J] mainModuleName = {mainModuleName}"
-  IO.println "[DEBUG:K] Calling Elab.runFrontend"
   let env? ← Elab.runFrontend contents opts.leanOpts fileName mainModuleName
     opts.trustLevel opts.oleanFileName? opts.ileanFileName? opts.jsonOutput opts.errorOnKinds
     #[] opts.printStats setup?

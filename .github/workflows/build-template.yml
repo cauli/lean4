@@ -1,4 +1,4 @@
-# instantiated by ci.yml
+# Instantiated by ci.yml and browser.yml.
 name: build-template
 on:
   workflow_call:
@@ -43,7 +43,7 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_COMPRESS: true
       # current cache limit
-      CCACHE_MAXSIZE: 400M
+      CCACHE_MAXSIZE: ${{ matrix.wasm && '1600M' || '400M' }}
       # squelch error message about missing nixpkgs channel
       NIX_BUILD_SHELL: bash
       LSAN_OPTIONS: max_leaks=10
@@ -54,8 +54,10 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
         if: runner.os == 'Linux' && !matrix.cmultilib
+        with:
+          summarize: false
       - name: Install MSYS2
-        uses: msys2/setup-msys2@e9898307ac31d1a803454791be09ab9973336e1c # v2.31.1
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2.32.0
         with:
           msystem: clang64
           # `:` means do not prefix with msystem
@@ -96,7 +98,7 @@ jobs:
         if: matrix.cmultilib
       - name: Restore Cache
         id: restore-cache
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           # NOTE: must be in sync with `save` below and with `restore-cache` in `update-stage0.yml`
           path: |
@@ -107,10 +109,10 @@ jobs:
             build/stage1/**/*.ir
             build/stage1/**/*.c
             build/stage1/**/*.c.o*' || '' }}
-          key: ${{ matrix.name }}-build-v4-${{ github.sha }}
+          key: ${{ matrix.name }}-build-v5-${{ runner.os }}-${{ runner.arch }}-emsdk4.0.22-${{ hashFiles('src/stdlib_flags.h', '.github/browser-build-matrix.json') }}-${{ github.sha }}
           # fall back to (latest) previous cache
           restore-keys: |
-            ${{ matrix.name }}-build-v4
+            ${{ matrix.name }}-build-v5-${{ runner.os }}-${{ runner.arch }}-emsdk4.0.22-${{ hashFiles('src/stdlib_flags.h', '.github/browser-build-matrix.json') }}-
       # open nix-shell once for initial setup
       - name: Setup
         run: |
@@ -149,7 +151,9 @@ jobs:
           [ -d build ] || mkdir build
           cd build
           # arguments passed to `cmake`
-          OPTIONS=(-DWFAIL=ON)
+          # opt into `LEAN_HEADER_SNAPSHOTS` as suspected issue with incremental builds does not
+          # affect CI
+          OPTIONS=(-DWFAIL=ON -DLEAN_HEADER_SNAPSHOTS=ON)
           if [[ -n '${{ matrix.release }}' ]]; then
             # this also enables githash embedding into stage 1 library, which prohibits reusing
             # `.olean`s across commits, so we don't do it in the fast non-release CI
@@ -222,11 +226,12 @@ jobs:
           # instead of paying a full CI cycle. Consumed by
           # docker-wasm/relink-local.sh.
           mkdir -p linkkit
-          find build -name '*.a' -path '*stage1*' -exec cp {} linkkit/ \;
-          find build -name 'libuv*.a' -not -path '*stage1*' -exec cp {} linkkit/ \; || true
-          cp build/stage0/stdlib.make linkkit/stdlib.make.txt || true
-          cp build/stage0/leanc.sh linkkit/leanc.sh.txt || true
-          cp src/emscripten-exports.txt linkkit/ || true
+          find "build/$TARGET_STAGE" -name '*.a' -exec cp {} linkkit/ \;
+          find "build/$TARGET_STAGE/libuv" -name 'libuv*.a' -exec cp {} linkkit/ \;
+          cp "build/$TARGET_STAGE/stdlib.make" linkkit/stdlib.make.txt
+          cp "build/$TARGET_STAGE/leanc.sh" linkkit/leanc.sh.txt
+          cp "build/$TARGET_STAGE/emscripten-exports.txt" "build/$TARGET_STAGE/emscripten-exports-slim.txt" linkkit/
+          emcc --version > linkkit/emscripten-version.txt
           git rev-parse HEAD > linkkit/githash.txt
           ls -la linkkit/
           tar cf - linkkit | zstd -T0 --no-progress -o linkkit.tar.zst
@@ -235,6 +240,7 @@ jobs:
         with:
           name: linkkit-${{ matrix.name }}
           path: linkkit.tar.zst
+          compression-level: 0
           retention-days: 30
       - name: Dump wasm link configuration on failure
         if: failure() && matrix.wasm
@@ -251,7 +257,7 @@ jobs:
         # Caching on cancellation created some mysterious issues perhaps related to improper build
         # shutdown
         if: steps.restore-cache.outputs.cache-hit != 'true' && !cancelled()
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         with:
           # NOTE: must be in sync with `restore` above
           path: |
@@ -295,14 +301,6 @@ jobs:
           build/stage0/bin/lake cache clean
           rm -rf build/stage1
           mv build/stage1.bak build/stage1
-      - name: Upload generated Environment.c (diagnostic)
-        if: matrix.name == 'Web Assembly' || matrix.name == 'Linux 32bit'
-        uses: actions/upload-artifact@v4
-        with:
-          name: envc-${{ matrix.name }}
-          path: |
-            build/**/Environment.c
-          if-no-files-found: warn
       - name: Install
         run: |
           # Increase Node.js heap size for Emscripten's acorn-optimizer when building WASM.
@@ -328,12 +326,29 @@ jobs:
           # extern/@[export] boxed stems must stay (body-less externs have no
           # IR to fall back on) — only the wholesale boxed-wrapper set goes.
           export NODE_OPTIONS="--max-old-space-size=8192"
-          cp src/emscripten-exports-slim.txt linkkit/emscripten-exports.txt
+          cp "build/$TARGET_STAGE/emscripten-exports-slim.txt" linkkit/emscripten-exports.txt
           bash docker-wasm/relink-local.sh linkkit /tmp/slim-out -O3
           dir=$(echo lean-*-*)
           mkdir -p "$dir/bin-slim"
           cp /tmp/slim-out/lean.js /tmp/slim-out/lean.wasm "$dir/bin-slim/"
           ls -la "$dir"/bin-slim/
+      - name: Test browser API with the native i386 toolchain
+        if: matrix.browser && !matrix.wasm
+        run: build/$TARGET_STAGE/bin/lean --run tests/wasm/native-smoke.lean
+      - name: Test persistent WASM API in Node
+        if: matrix.wasm
+        timeout-minutes: 10
+        run: |
+          node tests/wasm/node-smoke.cjs "build/$TARGET_STAGE"
+          node tests/wasm/node-smoke.cjs "build/$TARGET_STAGE" /tmp/slim-out --init-only
+      - name: Test persistent WASM API in Chromium
+        if: matrix.wasm
+        timeout-minutes: 15
+        run: |
+          npm ci --prefix tests/wasm --ignore-scripts --no-audit --no-fund
+          tests/wasm/node_modules/.bin/playwright install --with-deps chromium
+          node tests/wasm/browser-smoke.mjs "build/$TARGET_STAGE"
+          node tests/wasm/browser-smoke.mjs "build/$TARGET_STAGE" /tmp/slim-out --init-only
       - name: Check Binaries
         run: ${{ matrix.binary-check }} lean-*/bin/* || true
       - name: Count binary symbols
@@ -362,6 +377,7 @@ jobs:
         with:
           name: build-${{ matrix.name }}
           path: pack/*
+          compression-level: 0
       - name: Lean stats
         run: |
           build/$TARGET_STAGE/bin/lean --stats src/Lean.lean
@@ -372,6 +388,11 @@ jobs:
           ulimit -c unlimited  # coredumps
           time ctest --preset ${{ matrix.CMAKE_PRESET || 'release' }} --test-dir build/$TARGET_STAGE -j$NPROC --output-junit test-results.xml ${{ matrix.CTEST_OPTIONS }}
         if: matrix.test
+      # copy failed tests' output into the `<failure>` elements shown by the test summary
+      - name: Embed Test Output
+        run: |
+          python3 script/junit_embed_output.py build/$TARGET_STAGE/test-results.xml
+        if: always() && steps.test.conclusion == 'failure'
       - name: Test Summary
         uses: test-summary/action@37b508cfee6d4d080eedd00b5bb240a6a784a6a5 # v2.6
         with:
@@ -380,7 +401,7 @@ jobs:
         if: always() && steps.test.conclusion != 'skipped'
       - name: Check Test Binary
         run: ${{ matrix.binary-check }} tests/compile/534.lean.out
-        if: (!matrix.cross) && steps.test.conclusion != 'skipped'
+        if: matrix.binary-check && (!matrix.cross) && steps.test.conclusion != 'skipped'
       - name: Build Stage 2
         run: |
           make -C build -j$NPROC stage2

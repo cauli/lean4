@@ -186,6 +186,10 @@ $(OUTBIN)/lake$(EXE): ${LIB}/temp/LakeMain.*o.export $(OUTLIB)/libLake_shared$(S
 lake: $(OUTBIN)/lake$(EXE)
 
 $(OUTBIN)/lean$(EXE): $(OUTLIB)/libInit_shared$(SO) $(OUTLIB)/libleanshared_2$(SO) $(OUTLIB)/libleanshared_1$(SO) $(OUTLIB)/libleanshared$(SO) ${LIB}/temp/libleanmain.a
+ifeq "${CMAKE_SYSTEM_NAME}" "Emscripten"
+	LEAN_SYSROOT="${PREV_STAGE}" LEAN_PATH="${LIB}/lean" "${PREV_STAGE}/bin/lean${PREV_STAGE_CMAKE_EXECUTABLE_SUFFIX}" --run "${LEAN_SOURCE_DIR}/../script/wasm-export-candidates.lean" "${CMAKE_BINARY_DIR}/wasm-export-candidates.json"
+	python3 "${LEAN_SOURCE_DIR}/../script/generate-wasm-exports.py" --nm "${CMAKE_NM}" --candidates "${CMAKE_BINARY_DIR}/wasm-export-candidates.json" --output "${CMAKE_BINARY_DIR}" ${LIB}/temp/libleanmain.a ${LIB}/temp/libleanshell.a $(OUTARC)/libleancpp.a $(OUTARC)/libleanrt.a $(OUTARC)/libInit.a $(OUTARC)/libStd.a $(OUTARC)/libLean.a
+endif
 	$(link-preamble)
 	$(LEANC_SH) ${LIB}/temp/libleanmain.a ${CMAKE_EXE_LINKER_FLAGS_MAKE} ${LEAN_EXE_LINKER_FLAGS} ${LEANC_OPTS} -o $@
 

@@ -3,7 +3,6 @@ on:
   push:
     branches:
       - "master"
-      - "reinstate-wasm"
     tags:
       - "*"
   pull_request:
@@ -28,7 +27,12 @@ concurrency:
 jobs:
   # This job determines various settings for the following CI runs; see the `outputs` for details
   configure:
+    if: github.repository == 'leanprover/lean4'
     runs-on: ubuntu-latest
+    env:
+      # don't schedule nightlies on forks
+      IS_NIGHTLY: ${{ (github.event_name == 'schedule' && github.repository == 'leanprover/lean4') || inputs.action == 'release nightly' }}
+      IS_LEAN4_REPO_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.repository == 'leanprover/lean4' }}
     outputs:
       # The build matrix, dynamically generated here
       matrix: ${{ steps.set-matrix.outputs.matrix }}
@@ -48,12 +52,18 @@ jobs:
       RELEASE_TAG: ${{ steps.set-release.outputs.RELEASE_TAG }}
 
     steps:
-      - name: Checkout
+      - name: Checkout (full)
         uses: actions/checkout@v6
-        # don't schedule nightlies on forks
-        if: github.event_name == 'schedule' && github.repository == 'leanprover/lean4' || inputs.action == 'release nightly' || (startsWith(github.ref, 'refs/tags/') && github.repository == 'leanprover/lean4')
+        if: env.IS_NIGHTLY == 'true' || env.IS_LEAN4_REPO_TAG == 'true'
+      - name: Checkout (sparse)
+        uses: actions/checkout@v6
+        if: env.IS_NIGHTLY != 'true' && env.IS_LEAN4_REPO_TAG != 'true'
+        with:
+          sparse-checkout: |
+            src/stdlib_flags.h
+            stage0/src/stdlib_flags.h
       - name: Set Nightly
-        if: github.event_name == 'schedule' && github.repository == 'leanprover/lean4' || inputs.action == 'release nightly'
+        if: env.IS_NIGHTLY == 'true'
         id: set-nightly
         run: |
           if [[ -n '${{ secrets.PUSH_NIGHTLY_TOKEN }}' ]]; then
@@ -275,9 +285,6 @@ jobs:
                 "llvm-url": "https://github.com/leanprover/lean-llvm/releases/download/22.1.4/lean-llvm-x86_64-linux-gnu.tar.zst",
                 "prepare-llvm": "../script/prepare-llvm-linux.sh lean-llvm*",
                 "binary-check": "ldd -v",
-                // foreign code may be linked against more recent glibc
-                // reverse-ffi needs to be updated to link to LLVM libraries
-                "CTEST_OPTIONS": "-E 'foreign|leanlaketest_reverse-ffi'",
                 "CMAKE_OPTIONS": "-DLLVM=ON -DLLVM_CONFIG=${GITHUB_WORKSPACE}/build/llvm-host/bin/llvm-config"
               }, */
               {
@@ -285,8 +292,7 @@ jobs:
                 "name": "Linux release",
                 "os": large ? chonk : "ubuntu-latest",
                 "release": true,
-                // Disabled while iterating on the WASM build; TODO: set back to true
-                "enabled": false,
+                "enabled": true,
                 "check-rebootstrap": level >= 1,
                 // Done as part of test-bench
                 //"check-stage3": level >= 2,
@@ -301,14 +307,11 @@ jobs:
                 // Do not (yet) use Lake cache on release
                 "CMAKE_OPTIONS": "-DLEAN_EXTRA_CXX_FLAGS=-Werror" + (level < 3 ? " -DUSE_LAKE_CACHE=ON" : ""),
                 "lake-actions-cache": level < 3,
-                // foreign code may be linked against more recent glibc
-                "CTEST_OPTIONS": "-E 'foreign'",
               },
               {
                 "name": "Linux Lake (Cached)",
                 "os": large ? "nscloud-ubuntu-24.04-amd64-8x16" : "ubuntu-latest",
-                // Disabled while iterating on the WASM build; TODO: set back to true
-                "enabled": false,
+                "enabled": true,
                 "check-rebootstrap": level >= 1,
                 // Done as part of test-bench
                 //"check-stage3": level >= 2,
@@ -338,16 +341,31 @@ jobs:
                 // turn off custom allocator & symbolic functions to make LSAN do its magic
                 "CMAKE_PRESET": "sanitize",
                 // * `StackOverflow*` correctly triggers ubsan.
-                // * `reverse-ffi` fails to link in sanitizers.
                 // * `interactive` and `async_select_channel` fail nondeterministically, would need
                 //   to be investigated..
                 // * 9366 is too close to timeout.
-                // * `bv_` sometimes times out calling into cadical even though we should be using
-                //   the standard compile flags for it.
                 // * `grind_guide` always times out.
                 // * `pkg/|lake/` tests sometimes time out (likely even hang), related to Lake CI
                 //   failures?
-                "CTEST_OPTIONS": "-E 'StackOverflow|reverse-ffi|interactive|async_select_channel|9366|run/bv_|grind_guide|grind_bitvec2|grind_constProp|grind_indexmap|grind_list|grind_lint|grind_array_attach|grind_ite_trace|pkg/|lake/'"
+                // * `kernelMaxRecDepth` stack-overflows in the interpreter.
+                // * `elab_bench` is too expensive to run with fsanitize (also can e.g. stack overflow).
+                "CTEST_OPTIONS": "-E 'StackOverflow|interactive|async_select_channel|9366|elab/grind|pkg/|lake/|kernelMaxRecDepth|elab_bench/'"
+              },
+              {
+                "name": "Linux tsanitize",
+                "os": large ? "nscloud-ubuntu-24.04-amd64-32x64" : "ubuntu-latest",
+                // Disabled on this release branch. The job arrived with the #14161 backport, which
+                // was taken only so that #14838 would apply cleanly. `elab/grind_list_count` trips a
+                // data race in this branch's `grind` solver that master does not have, because that
+                // code was rewritten there rather than fixed.
+                "enabled": false,
+                "test": true,
+                // turn off custom allocator & symbolic functions to make TSAN do its magic
+                "CMAKE_PRESET": "sanitize-thread",
+                // We take a small subset of tests for tsan and run with reduced test parallelism.
+                // This is necessary as running tsan in parallel on all of our test suite would
+                // easily OOM the runner.
+                "CTEST_OPTIONS": "-j2 -E 'async_http_body|async_http_dispatch|async_http_encode|async_http_fuzz|async_http_response_framing|async_http_hang_regressions|task_iterators' -R '(compile/534)|(elab/(async.*|sync_.*|task.*|bv_bitwise|net_addr|networkInterfaces|openssl|idbg.*|Process|handleLocking|ioNulBytes|ioRandomBytes|libuv|readDir|realPath|st_test|stateRef|grind_list_count|vcgenSymBlock|doControlInfoAggregate))'"
               },
               {
                 "name": "macOS",
@@ -360,7 +378,6 @@ jobs:
                 "prepare-llvm": "../script/prepare-llvm-macos.sh lean-llvm*",
                 "binary-check": "otool -L",
                 "tar": "gtar", // https://github.com/actions/runner-images/issues/2619
-                "CTEST_OPTIONS": "-E 'leanlaketest_hello'", // started failing from unpack
               },
               {
                 "name": "macOS aarch64",
@@ -375,8 +392,6 @@ jobs:
                 "prepare-llvm": "../script/prepare-llvm-macos.sh lean-llvm*",
                 "binary-check": "otool -L",
                 "tar": "gtar", // https://github.com/actions/runner-images/issues/2619
-                // Disabled while iterating on the WASM build; TODO: drop this override
-                "enabled": false,
               },
               {
                 "name": "Windows",
@@ -413,49 +428,20 @@ jobs:
               //  "cross": true,
               //  "shell": "bash -euxo pipefail {0}"
               //}
-              {
-                  "name": "Web Assembly",
-                  "os": "ubuntu-latest",
-                  // Build a native 32bit binary in stage0 and use it to compile the oleans and the wasm build.
-                  // -msse2 -mfpmath=sse: 32-bit x86 defaults to x87 floating point
-                  // (FLT_EVAL_METHOD=2), which lean.h rejects; SSE math gives FLT_EVAL_METHOD=0.
-                  // STAGE0_LEAN_EXTRA_LINKER_FLAGS='-m32': links run through leanc.sh, whose baked
-                  // ldflags don't inherit the compile flags, so the arch must be repeated there.
-                  "CMAKE_OPTIONS": "-DCMAKE_C_COMPILER_WORKS=1 -DSTAGE0_USE_GMP=OFF -DSTAGE0_LEAN_EXTRA_CXX_FLAGS='-m32 -msse2 -mfpmath=sse' -DSTAGE0_LEANC_OPTS='-m32 -msse2 -mfpmath=sse' -DSTAGE0_LEAN_EXTRA_LINKER_FLAGS='-m32' -DSTAGE0_CMAKE_CXX_COMPILER=clang++ -DSTAGE0_CMAKE_C_COMPILER=clang -DSTAGE0_CMAKE_EXECUTABLE_SUFFIX=\"\" -DUSE_GMP=OFF -DMMAP=OFF -DSTAGE0_MMAP=OFF -DUSE_MIMALLOC=OFF -DCMAKE_AR=$EMSDK/upstream/emscripten/emar -DCMAKE_TOOLCHAIN_FILE=$EMSDK/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake -DLEAN_INSTALL_SUFFIX=-linux_wasm32 -DSTAGE0_CMAKE_LIBRARY_PATH=/usr/lib/i386-linux-gnu/",
-                  "wasm": true,
-                  "cmultilib": true,
-                  "release": true,
-                  "enabled": true,
-                  // Secondary until WASM builds become stable
-                  "secondary": true,
-                  "cross": true,
-                  "shell": "bash -euxo pipefail {0}",
-                  "build-timeout": 90,
-                  // Just a few selected tests because wasm is slow
-                  "CTEST_OPTIONS": "-R \"leantest_1007\\.lean|leantest_Format\\.lean|leanruntest\\_1037.lean|leanruntest_ac_rfl\\.lean|leanruntest_tempfile.lean\\.|leanruntest_libuv\\.lean\""
-              },
-              {
-                  "name": "Linux 32bit",
-                  "os": "ubuntu-latest",
-                  // A fully NATIVE i386 build of this 4.33 tree, mirroring the wasm build's
-                  // config (no GMP/mimalloc/mmap, 32-bit pointers). Purpose: reproduce the
-                  // wasm Init-import memory runaway natively, where real tooling (gdb,
-                  // valgrind, heaptrack) works. The test step runs the built stage1 binary
-                  // on files that import Init, so this job alone answers whether the runaway
-                  // is 32-bit-generic (tests hang/OOM) or Emscripten-specific (tests pass).
-                  // -msse2/-mfpmath=sse: lean.h's FLT_EVAL_METHOD guard. LEANC_EXTRA_CC_FLAGS
-                  // and LEAN_EXTRA_LINKER_FLAGS repeat the arch on every leanc compile AND
-                  // link (leanc.sh's baked ldflags don't inherit compile flags).
-                  "CMAKE_OPTIONS": "-DCMAKE_C_COMPILER_WORKS=1 -DUSE_GMP=OFF -DMMAP=OFF -DUSE_MIMALLOC=OFF -DSTAGE0_USE_GMP=OFF -DSTAGE0_MMAP=OFF -DLEAN_EXTRA_CXX_FLAGS='-m32 -msse2 -mfpmath=sse' -DLEANC_OPTS='-m32 -msse2 -mfpmath=sse' -DLEANC_EXTRA_CC_FLAGS='-m32 -msse2 -mfpmath=sse' -DLEAN_EXTRA_LINKER_FLAGS='-m32' -DSTAGE0_LEAN_EXTRA_CXX_FLAGS='-m32 -msse2 -mfpmath=sse' -DSTAGE0_LEANC_OPTS='-m32 -msse2 -mfpmath=sse' -DSTAGE0_LEANC_EXTRA_CC_FLAGS='-m32 -msse2 -mfpmath=sse' -DSTAGE0_LEAN_EXTRA_LINKER_FLAGS='-m32' -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang -DSTAGE0_CMAKE_CXX_COMPILER=clang++ -DSTAGE0_CMAKE_C_COMPILER=clang -DCMAKE_LIBRARY_PATH=/usr/lib/i386-linux-gnu/ -DSTAGE0_CMAKE_LIBRARY_PATH=/usr/lib/i386-linux-gnu/ -DLEAN_INSTALL_SUFFIX=-linux_32",
-                  "cmultilib": true,
-                  "release": true,
-                  "enabled": true,
-                  "secondary": true,
-                  "shell": "bash -euxo pipefail {0}",
-                  "build-timeout": 90,
-                  // These run the BUILT stage1 binary on files importing Init — the repro signal.
-                  "CTEST_OPTIONS": "-R \"leantest_1007\\.lean|leantest_Format\\.lean|leanruntest\\_1037.lean|leanruntest_ac_rfl\\.lean|leanruntest_tempfile.lean\\.|leanruntest_libuv\\.lean\""
-              }
+              // {
+              //   "name": "Web Assembly",
+              //   "os": "ubuntu-latest",
+              //   // Build a native 32bit binary in stage0 and use it to compile the oleans and the wasm build
+              //   "CMAKE_OPTIONS": "-DCMAKE_C_COMPILER_WORKS=1 -DSTAGE0_USE_GMP=OFF -DSTAGE0_LEAN_EXTRA_CXX_FLAGS='-m32' -DSTAGE0_LEANC_OPTS='-m32' -DSTAGE0_CMAKE_CXX_COMPILER=clang++ -DSTAGE0_CMAKE_C_COMPILER=clang -DSTAGE0_CMAKE_EXECUTABLE_SUFFIX=\"\" -DUSE_GMP=OFF -DMMAP=OFF -DSTAGE0_MMAP=OFF -DCMAKE_AR=../emsdk/emsdk-main/upstream/emscripten/emar -DCMAKE_TOOLCHAIN_FILE=../emsdk/emsdk-main/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake -DLEAN_INSTALL_SUFFIX=-linux_wasm32 -DSTAGE0_CMAKE_LIBRARY_PATH=/usr/lib/i386-linux-gnu/",
+              //   "wasm": true,
+              //   "cmultilib": true,
+              //   "release": true,
+              //   "enabled": level >= 2,
+              //   "cross": true,
+              //   "shell": "bash -euxo pipefail {0}",
+              //   // Just a few selected tests because wasm is slow
+              //   "CTEST_OPTIONS": "-R \"leantest_1007\\.lean|leantest_Format\\.lean|leanruntest\\_1037.lean|leanruntest_ac_rfl\\.lean|leanruntest_tempfile.lean\\.|leanruntest_libuv\\.lean\""
+              // }
             ];
             if (lakeCi) {
               for (const job of matrix) {
@@ -504,7 +490,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     # mark as merely cancelled not failed if builds are cancelled
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.repository == 'leanprover/lean4' }}
     steps:
       - if: ${{ contains(needs.*.result, 'failure') && github.repository == 'leanprover/lean4' && github.ref_name == 'master' }}
         uses: zulip/github-actions-zulip/send-message@bd8ec52de371d139ae8313661b7d8318c19266aa # v2.0.1
@@ -536,7 +522,7 @@ jobs:
         with:
           path: artifacts
       - name: Release
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         with:
           files: artifacts/*/*
           fail_on_unmatched_files: true
@@ -583,7 +569,7 @@ jobs:
           echo -e "\n*Full commit log*\n" >> diff.md
           git log --oneline "$last_tag"..HEAD | sed 's/^/* /' >> diff.md
       - name: Release Nightly
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         with:
           body_path: diff.md
           prerelease: true

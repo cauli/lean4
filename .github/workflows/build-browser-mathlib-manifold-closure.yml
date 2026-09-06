@@ -70,11 +70,11 @@ jobs:
           # jobs instead of coupling this sidecar to the entire matrix.
           RUN_JOBS=$(gh api "repos/${{ github.repository }}/actions/runs/$TOOLCHAIN_RUN_ID/jobs?per_page=100")
           for JOB_NAME in \
-            "build-secondary / Web Assembly" \
-            "build-secondary / Linux 32bit"
+            "Web Assembly" \
+            "Linux 32bit"
           do
             jq -e --arg name "$JOB_NAME" \
-              '[.jobs[] | select(.name == $name and .conclusion == "success")] | length == 1' \
+              '[.jobs[] | select((.name == ("build / " + $name) or .name == ("build-secondary / " + $name)) and .conclusion == "success")] | length == 1' \
               <<< "$RUN_JOBS"
           done
 
@@ -147,14 +147,6 @@ jobs:
           git -C mathlib4 fetch --depth=1 origin "$MATHLIB_COMMIT"
           git -C mathlib4 checkout --detach FETCH_HEAD
           test "$(git -C mathlib4 rev-parse HEAD)" = "$MATHLIB_COMMIT"
-
-      - name: Apply pinned Mathlib compatibility patch
-        run: |
-          PATCH="$GITHUB_WORKSPACE/.github/patches/mathlib-de3a9cf330-lean62b6-finite-type.patch"
-          test "$(git -C mathlib4 rev-parse HEAD)" = "$MATHLIB_COMMIT"
-          git -C mathlib4 apply --check "$PATCH"
-          git -C mathlib4 apply "$PATCH"
-          git -C mathlib4 diff --check
           test "$(cat mathlib4/lean-toolchain)" = "$LEAN_TOOLCHAIN"
 
       - name: Checkout exact Lake dependency revisions

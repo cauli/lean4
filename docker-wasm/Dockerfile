@@ -50,7 +50,6 @@ RUN git clone https://github.com/emscripten-core/emsdk.git ${EMSDK} && \
 
 # Set up Emscripten environment
 ENV PATH="${EMSDK}:${EMSDK}/upstream/emscripten:${PATH}"
-ENV EMSDK_NODE="${EMSDK}/node/20.18.0_64bit/bin/node"
 
 # Create working directory
 WORKDIR /lean4
@@ -61,4 +60,3 @@ RUN chmod +x /build.sh
 
 # Default command
 CMD ["/build.sh"]
-

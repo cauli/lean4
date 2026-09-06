@@ -20,10 +20,10 @@ import Lean.Meta.Sym.Eta
 import Lean.Meta.Sym.Util
 import Lean.Meta.HasAssignableMVar
 import Init.Data.List.MapIdx
-import Init.Data.Nat.Linear
+import Init.Data.Nat.Internal.Linear
 import Std.Do.Triple.Basic
 namespace Lean.Meta.Sym
-open Internal
+open Lean.Meta.Sym.Internal
 
 /-!
 This module implements efficient pattern matching and unification module for the symbolic simulation
@@ -501,6 +501,9 @@ def isAssignedMVar (e : Expr) : MetaM Bool :=
   | _            => return false
 
 partial def process (p : Expr) (e : Expr) : UnifyM Bool := do
+  -- A pattern subterm internalized into the same table as the target shares its pointer, so a
+  -- pointer match is a closed term equal to the target with no variables left to bind.
+  if isSameExpr p e then return true
   let e' := etaReduce e
   if !isSameExpr e e' then
     -- **Note**: We eagerly eta reduce patterns
@@ -1010,9 +1013,16 @@ def noPending : UnifyM Bool := do
   let s ← get
   return s.ePending.isEmpty && s.uPending.isEmpty && s.iPending.isEmpty
 
-def instantiateLevelParamsS (e : Expr) (paramNames : List Name) (us : List Level) : SymM Expr :=
-  -- We do not assume `e` is maximally shared
-  shareCommon (e.instantiateLevelParams paramNames us)
+def instantiateLevelParamsS (e : Expr) (paramNames : List Name) (us : List Level) : SymM Expr := do
+  /-
+  We do not assume `e` is maximally shared.
+  **Note:** We disable checks here because `e` may contain loose bound variables,
+  and the repair procedure only works on closed terms. This is ok because this
+  function only creates temporary terms for performing definitional equality tests
+  and synthesizing instances (see `mkPreResult`). These terms are not internalized;
+  terms that survive into the goal go through checked entry points.
+  -/
+  shareCommonWithoutChecks (e.instantiateLevelParams paramNames us)
 
 inductive MkPreResultResult where
   | failed

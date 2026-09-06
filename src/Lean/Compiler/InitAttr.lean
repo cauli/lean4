@@ -9,6 +9,7 @@ prelude
 public import Lean.AddDecl
 public import Lean.Elab.InfoTree.Main
 import Init.Data.Range.Polymorphic.Stream
+import Init.System.Platform
 import Lean.Compiler.NameMangling
 import Lean.Compiler.ModPkgExt
 
@@ -200,7 +201,12 @@ private unsafe def runInitAttrs (env : Environment) (opts : Options) : IO Unit :
   if !(← isInitializerExecutionEnabled) then
     throw <| IO.userError "`enableInitializersExecution` must be run before calling `importModules (loadExts := true)`"
   for mod in env.header.modules, modIdx in 0...* do
+    let started ← if System.Platform.isEmscripten then IO.monoMsNow else pure 0
     runInitAttrForMod env opts mod modIdx
+    if System.Platform.isEmscripten then
+      let now ← IO.monoMsNow
+      if now - started >= 1000 then
+        IO.println s!"[PROFILE:IMPORT] t={now}ms phase=module-init:{mod.module} elapsed={now - started}ms"
 
 /--
 Like `runInitAttrs`, but walks only the given module indices. Used by `--incr-load`: the indices

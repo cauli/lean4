@@ -1,0 +1,29 @@
+[
+  {
+    "name": "Web Assembly",
+    "os": "ubuntu-24.04",
+    "CMAKE_OPTIONS": "-DCMAKE_C_COMPILER_WORKS=1 -DSTAGE0_USE_GMP=OFF -DSTAGE0_LEAN_EXTRA_CXX_FLAGS='-m32 -msse2 -mfpmath=sse' -DSTAGE0_LEANC_OPTS='-m32 -msse2 -mfpmath=sse' -DSTAGE0_LEAN_EXTRA_LINKER_FLAGS='-m32' -DSTAGE0_CMAKE_CXX_COMPILER=clang++ -DSTAGE0_CMAKE_C_COMPILER=clang -DSTAGE0_CMAKE_EXECUTABLE_SUFFIX=\"\" -DUSE_GMP=OFF -DMMAP=OFF -DSTAGE0_MMAP=OFF -DUSE_MIMALLOC=OFF -DCMAKE_AR=$EMSDK/upstream/emscripten/emar -DCMAKE_TOOLCHAIN_FILE=$EMSDK/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake -DLEAN_INSTALL_SUFFIX=-linux_wasm32 -DSTAGE0_CMAKE_LIBRARY_PATH=/usr/lib/i386-linux-gnu/",
+    "cmultilib": true,
+    "release": true,
+    "enabled": true,
+    "cross": true,
+    "shell": "bash -euxo pipefail {0}",
+    "build-timeout": 90,
+    "browser": true,
+    "wasm": true
+  },
+  {
+    "name": "Linux 32bit",
+    "os": "ubuntu-24.04",
+    "CMAKE_OPTIONS": "-DCMAKE_C_COMPILER_WORKS=1 -DUSE_GMP=OFF -DMMAP=OFF -DUSE_MIMALLOC=OFF -DSTAGE0_USE_GMP=OFF -DSTAGE0_MMAP=OFF -DLEAN_EXTRA_CXX_FLAGS='-m32 -msse2 -mfpmath=sse' -DLEANC_OPTS='-m32 -msse2 -mfpmath=sse' -DLEANC_EXTRA_CC_FLAGS='-m32 -msse2 -mfpmath=sse' -DLEAN_EXTRA_LINKER_FLAGS='-m32' -DSTAGE0_LEAN_EXTRA_CXX_FLAGS='-m32 -msse2 -mfpmath=sse' -DSTAGE0_LEANC_OPTS='-m32 -msse2 -mfpmath=sse' -DSTAGE0_LEANC_EXTRA_CC_FLAGS='-m32 -msse2 -mfpmath=sse' -DSTAGE0_LEAN_EXTRA_LINKER_FLAGS='-m32' -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang -DSTAGE0_CMAKE_CXX_COMPILER=clang++ -DSTAGE0_CMAKE_C_COMPILER=clang -DCMAKE_LIBRARY_PATH=/usr/lib/i386-linux-gnu/ -DSTAGE0_CMAKE_LIBRARY_PATH=/usr/lib/i386-linux-gnu/ -DLEAN_INSTALL_SUFFIX=-linux_32",
+    "cmultilib": true,
+    "release": true,
+    "enabled": true,
+    "cross": false,
+    "shell": "bash -euxo pipefail {0}",
+    "build-timeout": 90,
+    "browser": true,
+    "test": true,
+    "CTEST_OPTIONS": "--no-tests=error -R '^elab/(Format|ac_rfl)\\.lean$'"
+  }
+]

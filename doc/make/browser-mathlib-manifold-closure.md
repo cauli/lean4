@@ -2,11 +2,10 @@
 
 The workflow
 [`build-browser-mathlib-manifold-closure.yml`](../../.github/workflows/build-browser-mathlib-manifold-closure.yml)
-builds the part of Mathlib needed by
-`Mathlib.Geometry.Manifold.IsManifold.Basic`. It does **not** build or claim to
-contain all of Mathlib.
+builds the transitive Mathlib dependencies of the roots in the lock file:
+manifolds, spheres, and circles. It does **not** contain all of Mathlib.
 
-This is a sidecar build. The normal `Web Assembly` and `Linux 32bit` CI jobs do
+This is a sidecar build. The `Browser toolchain` workflow’s `Web Assembly` and `Linux 32bit` jobs do
 not depend on it, and their artifacts are not modified. The sidecar downloads
 both artifacts from the same completed CI run. It uses the native i386 compiler
 to build Mathlib at native speed and checks every packaged `.olean` against the
@@ -14,7 +13,7 @@ to build Mathlib at native speed and checks every packaged `.olean` against the
 
 ## Reproduce the artifact
 
-1. Fork this repository and run the normal `CI` workflow at the revision you
+1. Fork this repository and run the `Browser toolchain` workflow at the revision you
    want to package. Wait for both `Web Assembly` and `Linux 32bit` to finish.
 2. Copy that workflow run's numeric id.
 3. Open **Actions → Build browser Mathlib manifold closure → Run workflow** on
@@ -22,7 +21,7 @@ to build Mathlib at native speed and checks every packaged `.olean` against the
 4. Download the artifact named
    `browser-mathlib-manifold-closure-<lean>-<mathlib>`.
 
-The exact Mathlib commit, root module, compatible upstream Lean revision, and
+The exact Mathlib commit, root modules, compatible upstream Lean revision, and
 toolchain label live in
 [`browser-mathlib-manifold-closure.lock.json`](../../.github/browser-mathlib-manifold-closure.lock.json).
 The uploaded `manifest.json` records those pins, all transitive Lake package
@@ -30,7 +29,7 @@ revisions, the two input artifact names, every packaged file, and the SHA-256
 of each pack. It also records the ProofWidgets workspace adjustment: the pinned
 TypeScript `widgetJsAll` target is built from its package lock because its output
 is embedded in Lean modules, instead of requiring a prebuilt ProofWidgets release.
-Lean `.olean` and `.ir` files are then packaged. `SHA256SUMS` covers the manifest
+Lean `.olean`, `.ir`, and `.ir.sig` files are then packaged. `SHA256SUMS` covers the manifest
 and packs.
 
 The workflow rejects a run id from another repository, a run not based on the

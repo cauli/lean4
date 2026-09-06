@@ -39,7 +39,6 @@ Author: Leonardo de Moura
 #include "library/print.h"
 #include "initialize/init.h"
 #include "library/ir_interpreter.h"
-#include "util/path.h"
 #ifdef _MSC_VER
 #include <io.h>
 #define STDOUT_FILENO 1
@@ -287,21 +286,19 @@ extern "C" LEAN_EXPORT int lean_main(int argc, char ** argv) {
 #ifdef LEAN_EMSCRIPTEN
     // When running in command-line mode under Node.js, we make system directories available in the virtual filesystem.
     // This mode is used to compile 32-bit oleans.
-    EM_ASM(
-        if ((typeof process === "undefined") || (process.release.name !== "node")) {
-            throw new Error("The Lean command-line driver can only run under Node.js. For the embeddable WASM library, see lean_wasm.cpp.");
+    EM_ASM({
+        if (typeof process !== "undefined" && process.release && process.release.name === "node") {
+            if (process.env["LEAN_PATH"]) ENV["LEAN_PATH"] = process.env["LEAN_PATH"];
+            FS.mount(NODEFS, { root: "/home" }, "/home");
+            FS.mount(NODEFS, { root: "/tmp" }, "/tmp");
+            // macOS resolves the host's /tmp symlink before reporting cwd.
+            FS.chdir(process.cwd().replace(/^\/private\/tmp(?=\/|$)/, "/tmp"));
+        } else {
+            for (var dir of ["/workspace", "/bin", "/lib/lean/library"]) FS.mkdirTree(dir);
+            FS.chdir("/workspace");
+            if (!ENV["LEAN_PATH"]) ENV["LEAN_PATH"] = "/lib/lean/library";
         }
-
-        var lean_path = process.env["LEAN_PATH"];
-        if (lean_path) {
-            ENV["LEAN_PATH"] = lean_path;
-        }
-
-        // We cannot mount /, see https://github.com/emscripten-core/emscripten/issues/2040
-        FS.mount(NODEFS, { root: "/home" }, "/home");
-        FS.mount(NODEFS, { root: "/tmp" }, "/tmp");
-        FS.chdir(process.cwd());
-    );
+    });
 #elif defined(LEAN_WINDOWS)
     // "best practice" according to https://docs.microsoft.com/en-us/windows/win32/api/errhandlingapi/nf-errhandlingapi-seterrormode
     SetErrorMode(SEM_FAILCRITICALERRORS);
@@ -320,7 +317,11 @@ extern "C" LEAN_EXPORT int lean_main(int argc, char ** argv) {
         std::cerr << "error: " << ex.what() << std::endl;
         return 1;
     }
-    consume_io_result(lean_enable_initializer_execution());
+    lean_enable_initializer_execution();
+
+    // Default the configured thread stack size from the environment as in `lean_run_main`;
+    // `--tstack` below overrides it.
+    set_thread_stack_size_from_env();
 
     int rc;
     object_ref shell_opts;
@@ -349,12 +350,16 @@ extern "C" LEAN_EXPORT int lean_main(int argc, char ** argv) {
 
     scoped_task_manager scope_task_man(get_shell_num_threads(shell_opts));
 
-    try {
-        return run_shell_main(argc - optind, argv + optind, shell_opts);
-    } catch (lean::throwable & ex) {
-        std::cerr << ex.what() << "\n";
-    } catch (std::bad_alloc & ex) {
-        std::cerr << "out of memory" << std::endl;
-    }
-    return 1;
+    int shell_rc = 1;
+    // Do not rely on OS thread stack size, as for Lean executables
+    run_with_thread_stack([&]() {
+        try {
+            shell_rc = run_shell_main(argc - optind, argv + optind, shell_opts);
+        } catch (lean::throwable & ex) {
+            std::cerr << ex.what() << "\n";
+        } catch (std::bad_alloc & ex) {
+            std::cerr << "out of memory" << std::endl;
+        }
+    });
+    return shell_rc;
 }

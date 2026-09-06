@@ -9,8 +9,8 @@ include(ExternalProject)
 project(LEAN CXX C)
 set(LEAN_VERSION_MAJOR 4 CACHE STRING "")
 set(LEAN_VERSION_MINOR 33 CACHE STRING "")
-set(LEAN_VERSION_PATCH 0 CACHE STRING "")
-set(LEAN_VERSION_IS_RELEASE 0 CACHE STRING "") # This number is 1 in the release revision, and 0 otherwise.
+set(LEAN_VERSION_PATCH 1 CACHE STRING "")
+set(LEAN_VERSION_IS_RELEASE 1 CACHE STRING "") # This number is 1 in the release revision, and 0 otherwise.
 set(LEAN_SPECIAL_VERSION_DESC "" CACHE STRING "Additional version description like 'nightly-2018-03-11'")
 # project(LEAN) above implicitly creates empty LEAN_VERSION_{MAJOR,MINOR,PATCH}
 # normal variables (CMake sets <PROJECT>_VERSION_* for the project name). These
@@ -103,12 +103,14 @@ option(TRACK_LIVE_EXPRS "TRACK_LIVE_EXPRS" OFF)
 option(CUSTOM_ALLOCATORS "CUSTOM_ALLOCATORS" ON)
 option(SAVE_SNAPSHOT "SAVE_SNAPSHOT" ON)
 option(SAVE_INFO "SAVE_INFO" ON)
-option(SMALL_ALLOCATOR "SMALL_ALLOCATOR" OFF)
 option(MMAP "MMAP" ON)
 option(LAZY_RC "LAZY_RC" OFF)
 option(RUNTIME_STATS "RUNTIME_STATS" OFF)
 option(BSYMBOLIC "Link with -Bsymbolic to reduce call overhead in shared libraries (Linux)" ON)
 option(USE_GMP "USE_GMP" ON)
+# GMP versions before 6.3.0 contain bugs that can make Lean produce unsound results.
+# When ON, build against whatever GMP is available even if it is older than 6.3.0.
+option(FORCE_GMP "Build against the available GMP even if older than the required 6.3.0" OFF)
 option(USE_MIMALLOC "use mimalloc" ON)
 set(LEAN_MI_SECURE 0 CACHE STRING "Configure mimalloc memory safety mitigations (https://github.com/microsoft/mimalloc/blob/v2.2.7/include/mimalloc/types.h#L56-L60)")
 
@@ -131,6 +133,14 @@ set(LEAN_EXTRA_LAKE_OPTS "" CACHE STRING "extra options to lake")
 set(LEAN_EXTRA_MAKE_OPTS "" CACHE STRING "extra options to leanmake")
 set(LEANC_CC ${CMAKE_C_COMPILER} CACHE STRING "C compiler to use in `leanc`")
 
+# Core-only flags.
+# We want to ship `prefer_native=true` but disable it in all stage builds for consistent behavior.
+# Note that currently this could lead to inconsistent behavior in server mode with `USE_LAKE=OFF`
+# but that option is not used anymore and should likely be deleted.
+string(APPEND LEAN_EXTRA_OPTS " -Dinterpreter.prefer_native=false")
+# More useful for devs than users
+string(APPEND LEAN_EXTRA_OPTS " -Dpp.rawOnError=true")
+
 # option used by the CI to fail on warnings
 option(WFAIL "Fail build if warnings are emitted by Lean" ON)
 if(WFAIL MATCHES "ON")
@@ -143,12 +153,7 @@ if(LAZY_RC MATCHES "ON")
 endif()
 
 if(USE_MIMALLOC)
-  set(SMALL_ALLOCATOR OFF)
   set(LEAN_MIMALLOC "#define LEAN_MIMALLOC")
-endif()
-
-if(SMALL_ALLOCATOR MATCHES "ON")
-  set(LEAN_SMALL_ALLOCATOR "#define LEAN_SMALL_ALLOCATOR")
 endif()
 
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -173,50 +178,14 @@ if(CHECK_OLEAN_VERSION MATCHES "ON")
 endif()
 
 if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
-  # Build with Emscripten pthreads. The single-threaded WASM build OOMs during the
-  # `Init` olean import (upstream's async-const realization accumulates unboundedly
-  # with no worker threads to drain it); the pthread build — like the native and the
-  # older 4.28 WASM builds — drains that work on real worker threads. Requires
-  # cross-origin isolation (COOP/COEP) in the browser for SharedArrayBuffer.
-  #
-  # TODO(WN): code size/performance tradeoffs
-  # - we're using -O3; it's /okay/
-  # - -Oz produces quite slow code
-  # - system libraries such as OpenGL are included in the JS but shouldn't be
-  # - we disable "-flto" because it uses too much memory (we would need more RAM in the CI runner)
+  # Promise-based imports require pthreads and browser cross-origin isolation.
+  # Keep the proven JS exception ABI on emsdk 4.0.22. Native WASM exceptions
+  # and LTO require separate runtime and peak-link-memory validation.
+  # Code-generation flags reach every C/C++ compile; output-only flags stay
+  # on the link so that relinking does not invalidate cached objects.
+  set(EMSCRIPTEN_SETTINGS "-sDISABLE_EXCEPTION_CATCHING=0 -pthread")
+  set(EMSCRIPTEN_LINK_SETTINGS "-sALLOW_MEMORY_GROWTH=1 -sINCOMING_MODULE_JS_API=print,printErr,setStatus,locateFile,mainScriptUrlOrBlob,INITIAL_MEMORY,wasmMemory,noInitialRun,preRun,onRuntimeInitialized,onAbort,onExit,arguments,ENV")
 
-  # From https://emscripten.org/docs/compiling/WebAssembly.html#backends:
-  # > The simple and safe thing is to pass all -s flags at both compile and link time.
-  # -fwasm-exceptions uses native WASM exception handling instead of the
-  # JS-emulated kind (-sDISABLE_EXCEPTION_CATCHING=0), which routes every
-  # potentially-throwing call through a JS invoke_* trampoline. Lean's
-  # runtime is exception-heavy, so the emulated mode dominated profiles of
-  # olean import loading in the browser.
-  # No -flto: it OOMs the CI runner during the LTO link, so -mtail-call stands in
-  # as the codegen optimization. MAXIMUM_MEMORY=4GB (up from the 2GB default) tests
-  # whether the Init-import allocation is bounded-but-large or truly unbounded;
-  # shared-memory growth doesn't engage here, so the worker reserves it up front.
-  # INCOMING_MODULE_JS_API: emsdk 6 strictly validates Module keys supplied by
-    # the embedder; the playground workers set all of these before load.
-    # Threads: 4.33's import machinery creates IO.Promises during env
-    # realization, and without LEAN_MULTI_THREAD the task manager is a no-op,
-    # so Promise.new panics by design. A single-thread (no COOP/COEP, phone-
-    # sized) build needs a sequential task manager upstream first.
-    # JS-based EH: -fwasm-exceptions still miscompiles this tree on emsdk 6 —
-    # the first compile traps `unreachable` inside readModuleDataPartsOfMod
-    # (exception-heavy part-probing) in 10ms, silently, heap tiny, in both the
-    # pthread and single-thread configs; the native i386 build of the same
-    # sources is fine. Same class of bug 1aa6036d1f dodged on emcc 4.0.22.
-    # EMSCRIPTEN_SETTINGS holds only flags that change CODEGEN and therefore
-    # must reach every compile: -pthread (atomics/TLS) and the EH mode. Flags
-    # that only shape the final JS/wasm output live in EMSCRIPTEN_LINK_SETTINGS
-    # so that link-only experiments keep the ccache'd objects valid.
-    set(EMSCRIPTEN_SETTINGS "-sDISABLE_EXCEPTION_CATCHING=0 -pthread")
-    set(EMSCRIPTEN_LINK_SETTINGS "-sALLOW_MEMORY_GROWTH=1 -sINCOMING_MODULE_JS_API=print,printErr,setStatus,locateFile,mainScriptUrlOrBlob,INITIAL_MEMORY,wasmMemory,noInitialRun,preRun,onRuntimeInitialized,onAbort,onExit,arguments,ENV")
-
-  # EMSCRIPTEN_DEBUG: Enable readable function names and assertions for debugging
-  # This makes the WASM larger and slower but shows actual function names in stack traces
-  # instead of mangled names like "invoke_III"
   option(EMSCRIPTEN_DEBUG "Enable debug-friendly WASM build with readable function names" OFF)
   if(EMSCRIPTEN_DEBUG)
     message(STATUS "Emscripten debug mode: enabling readable function names and assertions")
@@ -353,8 +322,47 @@ if(USE_GMP MATCHES "ON")
     include_directories(${GMP_INSTALL_PREFIX}/include)
     set(GMP_LIBRARIES "${GMP_INSTALL_PREFIX}/lib/libgmp.a")
   else()
-    # GMP
-    find_package(GMP 5.0.5 REQUIRED)
+    # GMP. Versions before 6.3.0 contain bugs that can make Lean produce unsound
+    # results, so require 6.3.0 unless the user opts out via FORCE_GMP.
+    if(FORCE_GMP)
+      find_package(GMP REQUIRED)
+      if(NOT GMP_VERSION OR GMP_VERSION VERSION_LESS 6.3.0)
+        if(GMP_VERSION)
+          set(_gmp_forced_version "GMP ${GMP_VERSION}")
+        else()
+          set(_gmp_forced_version "a GMP whose version could not be determined")
+        endif()
+        message(WARNING
+          "FORCE_GMP is set: building against ${_gmp_forced_version}, which does not meet the "
+          "required GMP 6.3.0. Versions before 6.3.0 contain bugs that can cause Lean to produce "
+          "UNSOUND (i.e., INCORRECT) results in corner cases. Independent kernels that do not depend "
+          "on GMP will catch the unsoundness. Build only if you understand the risk.")
+      endif()
+    else()
+      find_package(GMP 6.3.0)
+      # An undetermined version is conservatively treated as too old;
+      # find_package would otherwise accept it since VERSION_VAR is empty.
+      if(NOT GMP_FOUND OR NOT GMP_VERSION)
+        if(NOT GMP_INCLUDE_DIR)
+          set(_gmp_detail "no GMP was found")
+        elseif(GMP_VERSION)
+          set(_gmp_detail "found GMP ${GMP_VERSION}")
+        elseif(NOT PKG_CONFIG_FOUND)
+          set(_gmp_detail "found a GMP, but no pkg-config to read its version with")
+        else()
+          set(_gmp_detail "found a GMP, but no `gmp.pc` reporting its version")
+        endif()
+        message(FATAL_ERROR
+          "Lean requires GMP 6.3.0 or newer (${_gmp_detail}). "
+          "GMP versions before 6.3.0 contain bugs that can cause Lean to produce UNSOUND "
+          "(i.e., INCORRECT) results in corner cases. Independent kernels that do not depend on GMP "
+          "will catch the unsoundness.\n"
+          "Choose one of:\n"
+          "  * Install GMP >= 6.3.0, then reconfigure; or\n"
+          "  * -DUSE_GMP=OFF   use Lean's built-in bignum implementation (safest; some performance cost); or\n"
+          "  * -DFORCE_GMP=ON  build against the GMP that is present anyway (NOT recommended: Lean may produce unsound results).")
+      endif()
+    endif()
     include_directories(${GMP_INCLUDE_DIR})
   endif()
   if(NOT LEAN_STANDALONE)
@@ -904,25 +912,15 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
   # code — mandatorily for body-less @[extern] decls like the IO primitives —
   # via dlsym(RTLD_DEFAULT), which searches the wasm export table) while
   # letting wasm-ld GC everything not reachable from the export list.
-  # emscripten-exports.txt pins the symbols dlsym must see: the C runtime API
-  # (lean_*), the l_<mangled>[___boxed] stems of every @[extern] decl in the
-  # shipped libraries, and the entry points the playground workers call. All
-  # other Lean functions stay callable through their IR (shipped as .ir parts),
-  # just interpreted instead of native. This replaces MAIN_MODULE=1 +
-  # LINKABLE=1 + EXPORT_ALL=1, whose ~230k-entry export table dominated the
-  # glue JS and blocked all DCE (WebKit on iPhone dies compiling the result).
-  # PTHREAD_POOL_SIZE pre-spawns worker threads so Lean can create threads without
-  # the main thread blocking (Emscripten can't spawn a worker synchronously); 4
-  # matched the working 4.28 build. STACK_SIZE=16MB covers whatever import work
-  # still runs on the main wasm stack (Emscripten's 64KB default overflows it).
-  # INITIAL_MEMORY must exceed static data + the 16MB stack + per-thread TLS; the
-  # pthread layout needs ~22MB up front (the default 16MB fails to link). Shared
-  # memory does NOT grow here (the browser's SharedArrayBuffer isn't resizable in
-  # this config), so the worker reserves the real size up front; MAXIMUM_MEMORY=4GB
-  # raises the wasm32 ceiling from 2GB so we can test whether the import fits.
+  # stdlib.make generates exports from this build's declaration metadata and
+  # archives: extern/export wrappers, initialized globals, module initializers,
+  # and the full variant's boxed wrappers. Both variants share the same objects.
+  # The main stack is 16 MiB; linear memory starts at 64 MiB and can grow to
+  # wasm32's 4 GiB ceiling. Embedders can supply a larger initial allocation.
+  # The pthread pool lets the worker create Lean threads synchronously.
   string(
     APPEND LEAN_EXE_LINKER_FLAGS
-    " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} ${EMSCRIPTEN_LINK_SETTINGS} -lnodefs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=2 -s ERROR_ON_UNDEFINED_SYMBOLS=0 -sEXPORTED_FUNCTIONS=@${LEAN_SOURCE_DIR}/emscripten-exports.txt -sEXPORTED_RUNTIME_METHODS=ccall,callMain,FS,ENV,getValue,setValue,stringToNewUTF8,UTF8ToString -s STACK_SIZE=16777216 -sINITIAL_MEMORY=67108864 -sMAXIMUM_MEMORY=4294967296 -sPTHREAD_POOL_SIZE=4"
+    " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} ${EMSCRIPTEN_LINK_SETTINGS} -lnodefs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=2 -s ERROR_ON_UNDEFINED_SYMBOLS=0 -sEXPORTED_FUNCTIONS=@${CMAKE_BINARY_DIR}/emscripten-exports.txt -sEXPORTED_RUNTIME_METHODS=ccall,callMain,FS,ENV,getValue,setValue,stringToNewUTF8,UTF8ToString -s STACK_SIZE=16777216 -sINITIAL_MEMORY=67108864 -sMAXIMUM_MEMORY=4294967296 -sPTHREAD_POOL_SIZE=4"
   )
 endif()
 
@@ -1093,7 +1091,7 @@ add_custom_target(clean-olean DEPENDS clean-stdlib)
 if(USE_LAKE_CACHE)
   add_custom_target(
     cache-get
-    COMMAND ${PREV_STAGE}/bin/lake${CMAKE_EXECUTABLE_SUFFIX} cache get --repo=leanprover/lean4
+    COMMAND ${PREV_STAGE}/bin/lake${CMAKE_EXECUTABLE_SUFFIX} cache get --repo=leanprover/lean4 $$LAKE_CACHE_EXTRA_ARGS
   )
 endif()
 

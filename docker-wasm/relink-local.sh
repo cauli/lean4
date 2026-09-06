@@ -19,6 +19,14 @@ set -euo pipefail
 KIT=${1:?usage: relink-local.sh <linkkit-dir> <out-dir> [extra emcc flags...]}
 OUT=${2:?usage: relink-local.sh <linkkit-dir> <out-dir> [extra emcc flags...]}
 shift 2
+if [[ -f "$KIT/emscripten-version.txt" ]]; then
+  expected=$(head -n 1 "$KIT/emscripten-version.txt")
+  actual=$(emcc --version | head -n 1)
+  if [[ "$actual" != "$expected" ]]; then
+    echo "Emscripten version differs from the link kit: expected $expected, got $actual" >&2
+    exit 1
+  fi
+fi
 mkdir -p "$OUT"
 
 emcc -o "$OUT/lean.js" \
