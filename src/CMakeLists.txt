@@ -930,6 +930,10 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
     APPEND LEAN_EXE_LINKER_FLAGS
     " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} ${EMSCRIPTEN_LINK_SETTINGS} -lnodefs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=2 -s ERROR_ON_UNDEFINED_SYMBOLS=0 -sEXPORTED_FUNCTIONS=@${LEAN_SOURCE_DIR}/emscripten-exports.txt -sEXPORTED_RUNTIME_METHODS=ccall,callMain,FS,ENV,getValue,setValue,stringToNewUTF8,UTF8ToString -s STACK_SIZE=16777216 -sINITIAL_MEMORY=67108864 -sMAXIMUM_MEMORY=4294967296 -sPTHREAD_POOL_SIZE=4"
   )
+  if(EMSCRIPTEN_COMPACT_EXPORTS)
+    # 🤖 This adapter requires MAIN_MODULE's dynamic linker, not the library links.
+    string(APPEND LEAN_EXE_LINKER_FLAGS " --js-library \"${LEAN_SOURCE_DIR}/wasm-dlsym.js\"")
+  endif()
 endif()
 
 # Build the compiler using the bootstrapped C sources for stage0, and use

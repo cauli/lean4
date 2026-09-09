@@ -217,17 +217,19 @@ jobs:
       - name: Pack wasm link kit
         if: matrix.wasm
         run: |
-          # Everything the final `bin/lean.js` link consumes, so link-flag
-          # experiments can relink locally (emsdk runs natively on any host)
-          # instead of paying a full CI cycle. Consumed by
-          # docker-wasm/relink-local.sh.
+          # 🤖 Fresh-build kit, not a replacement for the pinned 62b6a22 release kit.
           mkdir -p linkkit
-          find build -name '*.a' -path '*stage1*' -exec cp {} linkkit/ \;
-          find build -name 'libuv*.a' -not -path '*stage1*' -exec cp {} linkkit/ \; || true
-          cp build/stage0/stdlib.make linkkit/stdlib.make.txt || true
-          cp build/stage0/leanc.sh linkkit/leanc.sh.txt || true
-          cp src/emscripten-exports.txt linkkit/ || true
+          find build/stage1 -name '*.a' -exec cp {} linkkit/ \;
+          test -f linkkit/libuv.a
+          cp build/stage1/stdlib.make linkkit/stdlib.make.txt
+          cp build/stage1/leanc.sh linkkit/leanc.sh.txt
+          cp build/stage1/CMakeCache.txt linkkit/cmake-cache.txt
+          cp src/emscripten-exports.txt src/wasm-dlsym.js linkkit/
+          cp src/emscripten-exports.txt linkkit/emscripten-exports-canonical.txt
+          cp docker-wasm/relink-local.sh linkkit/
+          emcc --version > linkkit/sdk-version.txt
           git rev-parse HEAD > linkkit/githash.txt
+          (cd linkkit && sha256sum *.a *.txt *.js *.sh > SHA256SUMS)
           ls -la linkkit/
           tar cf - linkkit | zstd -T0 --no-progress -o linkkit.tar.zst
       - uses: actions/upload-artifact@v7

@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "release": "lean4-desktop-compact-62b6a22",
+  "runtime_git_sha": "62b6a2291302d4bbeace37642a066b7510d0145c",
+  "emscripten_version": "4.0.22",
+  "export_count": 104677,
+  "recipe_inputs": {
+    "src/emscripten-exports.txt": {
+      "bytes": 11322970,
+      "sha256": "1049f282260f3a18e1cf8bfe9b24355a3e515c54a4321d5ab2bd698f1a57a956"
+    },
+    "src/wasm-dlsym.js": {
+      "bytes": 2352,
+      "sha256": "264f000882cad81e4ed3484a0e3c545d7b533ae9ca06e34041b730afeb699da7"
+    }
+  },
+  "kit_files": {
+    "emscripten-exports-canonical.txt": {
+      "bytes": 11322970,
+      "sha256": "1049f282260f3a18e1cf8bfe9b24355a3e515c54a4321d5ab2bd698f1a57a956"
+    },
+    "emscripten-exports.txt": {
+      "bytes": 697979,
+      "sha256": "b22969d4116a0bc0ddf39ba22e3bd3711e1f9abcc2c0b760f100c01ff8b56e30"
+    },
+    "githash.txt": {
+      "bytes": 41,
+      "sha256": "87ab2dec5b53e53f73cf0437a2667a65b55a36f53656c65dbd6461922099dc72"
+    },
+    "leanc.sh.txt": {
+      "bytes": 725,
+      "sha256": "443aaf65849da7e53f8b0878aaeb64ddea11f759079f7a7a928bf5cc859e4192"
+    },
+    "libInit.a": {
+      "bytes": 14665244,
+      "sha256": "cae4f0201dde55b2d170ec146a2bcb6b2f7d4e15de0a161ec6bbd4a359e029d8"
+    },
+    "libLake.a": {
+      "bytes": 13092102,
+      "sha256": "9862337074bbca4dc87ab63a63e96795979d0a83b8765183504971316bc0bc0d"
+    },
+    "libLean.a": {
+      "bytes": 204150130,
+      "sha256": "9f487bd418b5494f3c80a6cb9f189009441384120da462d6a374fa69d39813f8"
+    },
+    "libLeanChecker.a": {
+      "bytes": 36590,
+      "sha256": "05b2146fd3188f0db73406abd90b638185dd43659db177af1484ab9d4950d8e0"
+    },
+    "libLeanIR.a": {
+      "bytes": 182646,
+      "sha256": "ab798c6b5ad9fbae4d0abe2404da5957143116e2dfadaff17125926229d3346b"
+    },
+    "libLeanc.a": {
+      "bytes": 24724,
+      "sha256": "4560309f73558fc070432fee911a705b144bb4708b9bcb1fdd69cc9940b3d793"
+    },
+    "libStd.a": {
+      "bytes": 17443340,
+      "sha256": "8c342854625968110a7ee396c6a53edb97b31fc0265d9cd993d20e217debbc15"
+    },
+    "libleancpp.a": {
+      "bytes": 2133322,
+      "sha256": "f9040ccdc6d1b732b4daa17e6a2e0b767c44ff08ca6ce96040cd8ecf24f63deb"
+    },
+    "libleancpp_1.a": {
+      "bytes": 2123606,
+      "sha256": "115dc9ab467c30e17c167810eb5bd035a7233c4bf6fb97f45aa7d243f6392df9"
+    },
+    "libleaninitialize.a": {
+      "bytes": 9788,
+      "sha256": "d3f10f0fb034273ff22c6a304b0444dcb19bcd00bfe756d71aca2af7833f383b"
+    },
+    "libleanmain.a": {
+      "bytes": 606,
+      "sha256": "fb8a81f5381ac9c9fb3b18e598d50f82d8e0e3859798f818ef15ed5e96c86d9c"
+    },
+    "libleanmanifest.a": {
+      "bytes": 470,
+      "sha256": "9a90a3abcc746c64f289af574c1bd5dc981cf402d675de279688244a086e41fa"
+    },
+    "libleanrt.a": {
+      "bytes": 591928,
+      "sha256": "36e3598123144c5eade3d1b974ef154183ad863cedefd0575b928931b08f1be8"
+    },
+    "libleanrt_initial-exec.a": {
+      "bytes": 591928,
+      "sha256": "36e3598123144c5eade3d1b974ef154183ad863cedefd0575b928931b08f1be8"
+    },
+    "libleanshell.a": {
+      "bytes": 37370,
+      "sha256": "a4bc78d32f29f11dab54661a7a1d3585ef1adbeb5ea4000b85c661fbfa495c11"
+    },
+    "libuv.a": {
+      "bytes": 173834,
+      "sha256": "e614c6fb6cf253756865e4b24e16a8c99b187eae40012f07672cba7e4dc9ebef"
+    },
+    "stdlib.make.txt": {
+      "bytes": 13589,
+      "sha256": "4ef06c0a514e486d9b590a69f5e311c6a0a372cea64407aedc8c63033a836d4e"
+    }
+  },
+  "outputs": {
+    "lean.js": {
+      "bytes": 148402,
+      "sha256": "63aa7b004435f3d90cf19d7c3b3e3284726701ea06da8bc70b015125e1a38b24"
+    },
+    "lean.wasm": {
+      "bytes": 100838905,
+      "sha256": "08d3ae8ee5dec8bae165ad5102e604eca016d74d2303e0b5748690df679a764e"
+    }
+  }
+}

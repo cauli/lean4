@@ -2,6 +2,12 @@
 
 Branch base: `62b6a2291302d4bbeace37642a066b7510d0145c`.
 
+This is the historical experiment record. The maintained full desktop release
+recipe, pinned inputs, and rollout boundaries are in
+[DESKTOP_RELEASE.md](DESKTOP_RELEASE.md). The generic CMake option still defaults
+to OFF; the full desktop CI and Docker configurations now opt in. When enabled,
+the full executable also links the versioned dlsym adapter.
+
 This experiment retains all native and boxed Lean functions. It changes only
 how Emscripten assigns WebAssembly exports to JavaScript variables.
 
@@ -106,4 +112,5 @@ iOS/WebKit, snapshot-restoration, MODULARIZE, or external-minifier validation.
 The WASM file and its function table remained byte-identical. No deployment
 was performed.
 
-No application default or published artifact is changed by this experiment.
+The experiment itself changed no application default or published artifact.
+The later release recipe does not publish; rollout is a separate action.

@@ -15,14 +15,17 @@ export NODE_OPTIONS="--max-old-space-size=8192"
 mkdir -p /lean4/build/wasm
 cd /lean4/build/wasm
 
-# CMake flags mirror the working CI wasm job (.github/workflows/ci.yml):
+# 🤖 Fresh full desktop build, not a reproduction of the validated 62b6a22 kit.
+# See DESKTOP_RELEASE.md for the pinned release relink.
+# CMake flags mirror the full CI wasm job (.github/workflows/ci.yml):
 # - stage0 is a native 32-bit x86 lean used to compile the oleans + drive the
 #   Emscripten cross-build; -m32 -msse2 -mfpmath=sse gives it FLT_EVAL_METHOD=0
 #   (lean.h rejects x87's =2), and -DSTAGE0_LEAN_EXTRA_LINKER_FLAGS=-m32 forces
 #   its executable link (via leanc.sh) to 32-bit.
-# - EMSCRIPTEN_DEBUG=ON: --profiling-funcs + -sASSERTIONS for readable traces.
+# 🤖 Keep release link settings aligned; debug builds need a separate build directory.
 cmake /lean4 \
     -DCMAKE_C_COMPILER_WORKS=1 \
+    -DCHECK_OLEAN_VERSION=ON \
     -DSTAGE0_USE_GMP=OFF \
     -DSTAGE0_LEAN_EXTRA_CXX_FLAGS='-m32 -msse2 -mfpmath=sse' \
     -DSTAGE0_LEANC_OPTS='-m32 -msse2 -mfpmath=sse' \
@@ -33,7 +36,9 @@ cmake /lean4 \
     -DUSE_GMP=OFF \
     -DMMAP=OFF \
     -DSTAGE0_MMAP=OFF \
-    -DEMSCRIPTEN_DEBUG=${EMSCRIPTEN_DEBUG:-ON} \
+    -DUSE_MIMALLOC=OFF \
+    -DEMSCRIPTEN_DEBUG=OFF \
+    -DEMSCRIPTEN_COMPACT_EXPORTS=ON \
     -DCMAKE_AR=${EMSDK}/upstream/emscripten/emar \
     -DCMAKE_TOOLCHAIN_FILE=${EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake \
     -DLEAN_INSTALL_SUFFIX=-linux_wasm32 \
@@ -46,5 +51,5 @@ make ${MAKE_TARGET:-stage1} -j$(nproc)
 echo ""
 echo "========================================="
 echo "Build complete. WASM output in: /lean4/build/wasm/stage1/bin/"
-echo "  lean.js, lean.wasm   (single-threaded; no lean.worker.js)"
+echo "  lean.js, lean.wasm   (pthreads; worker bootstrap is in lean.js)"
 echo "========================================="

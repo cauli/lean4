@@ -1,6 +1,15 @@
 # Lean 4 WebAssembly Docker Build
 
-This folder contains Docker configuration to build Lean 4 for WebAssembly locally.
+For the validated full desktop compact release, use the guarded old-kit recipe in
+[DESKTOP_RELEASE.md](DESKTOP_RELEASE.md). It does not rebuild Lean.
+
+The Docker commands below make a **fresh development build** from the mounted
+checkout. They now select compact exports, the versioned dlsym adapter,
+`EMSCRIPTEN_DEBUG=OFF`, `USE_MIMALLOC=OFF`, and `CHECK_OLEAN_VERSION=ON`, like the
+full desktop CI configuration. Rebuild the Docker image after updating `build.sh`.
+A fresh build embeds its own commit and cannot replace the validated runtime or
+its matching `.olean`/`.ir` bundle. Generic `relink-local.sh` keeps its old defaults
+because slim builds also call it.
 
 ## Prerequisites
 
@@ -41,13 +50,13 @@ docker run --rm -v "$(pwd):/lean4" lean4-wasm-builder bash -c "
 After a successful build, the WASM files will be in:
 - `build/wasm/stage1/bin/lean.js` - JavaScript loader
 - `build/wasm/stage1/bin/lean.wasm` - WebAssembly binary
-- `build/wasm/stage1/bin/lean.worker.js` - Web Worker for pthread support
+- Worker bootstrap is in `lean.js`; there is no separate `lean.worker.js` in this SDK configuration.
 - `build/wasm/stage1/lib/lean/` - Compiled .olean files
 
 ## Threading Support
 
 The build uses `-pthread` with Web Workers:
-- **`lean.worker.js`** is generated for spawning threads
+- Workers load the same classic `lean.js` script.
 - `PTHREAD_POOL_SIZE=4` creates a pool of 4 workers
 - Requires proper CORS headers for SharedArrayBuffer:
   ```
