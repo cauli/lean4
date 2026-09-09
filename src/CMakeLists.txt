@@ -214,6 +214,12 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
     set(EMSCRIPTEN_SETTINGS "-sDISABLE_EXCEPTION_CATCHING=0 -pthread")
     set(EMSCRIPTEN_LINK_SETTINGS "-sALLOW_MEMORY_GROWTH=1 -sINCOMING_MODULE_JS_API=print,printErr,setStatus,locateFile,mainScriptUrlOrBlob,INITIAL_MEMORY,wasmMemory,noInitialRun,preRun,onRuntimeInitialized,onAbort,onExit,arguments,ENV")
 
+    # 🤖 Change only JS export declarations; retain the full WASM export set.
+    option(EMSCRIPTEN_COMPACT_EXPORTS "Assign WASM exports through a JS loop" OFF)
+    if(EMSCRIPTEN_COMPACT_EXPORTS)
+      string(APPEND EMSCRIPTEN_LINK_SETTINGS " -sDECLARE_ASM_MODULE_EXPORTS=0")
+    endif()
+
   # EMSCRIPTEN_DEBUG: Enable readable function names and assertions for debugging
   # This makes the WASM larger and slower but shows actual function names in stack traces
   # instead of mangled names like "invoke_III"
