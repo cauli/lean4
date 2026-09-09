@@ -54,13 +54,14 @@ is byte-identical to the deployed boxed-dlsym artifact.
 
 `cmp` confirmed identical WASM bytes between both outputs and the deployed
 local artifact. `node --check` accepted the compact script. Helper syntax and
-`git diff --check` passed. No application artifact symlink was changed.
+`git diff --check` passed. The relink helper did not change application artifact symlinks.
 
-This proves a reduction in generated JS bytes, not a measured memory saving.
-The loop still materializes exports and does not remove Emscripten's GOT,
-function-table registration, or copied export dictionaries.
+The size comparison alone does not prove a memory saving. The separate browser
+comparison below measures that effect. The loop still materializes exports and
+does not remove Emscripten's GOT, function-table registration, or copied export
+dictionaries.
 
-## Runtime validation still required
+## Runtime validation
 
 Use the existing, working Node fixture layout and browser gates. A NODEFS
 mount does not make external symlink targets visible automatically. Initial
@@ -72,5 +73,37 @@ partial applications, borrowed parameters, package initializers, task/promise
 work across pthreads, and real Manifold levels. Compare exact output assets
 with the same memory and worker settings. Keep browser profiling isolated
 from relinks and other runtime tests.
+
+## Application validation follow-up
+
+On 2026-09-09, the matching web experiment completed:
+
+- 112/112 unchanged Node tests for both control and compact glue, using a complete
+  hardlinked NODEFS library fixture. No wrapper or conformance changes.
+- Fifteen real tutorial compiles per fresh Chromium arm, with valid proof
+  acceptance and invalid proof rejection. All five compact workers loaded the
+  real compact mount, not a host-only request override.
+- Separate browser task checks on both artifacts: spawn/get returned 42, and
+  sixteen tasks returned the expected sum 136. No waiting pthread was inspected.
+- The required first Manifold browser gate passed on its first run: locked
+  declaration rejected, reference proof accepted by the local kernel, and no
+  Real Analysis artifact fetched. The temporary lab-only glue link was restored.
+
+With the same 2 GiB application-supplied capacity and four eager workers,
+Chromium browser-tree RSS after forced GC was 2306.8 MiB for control versus
+1626.4 MiB for compact, a 29.5% reduction. This RSS sum is not unique physical
+RAM. Renderer footprint printed by macOS vmmap fell from 1.3G to 1.0G, with an
+incomplete PartitionAlloc-zone analysis warning. JS used heap fell from
+403.4 to 375.0 MiB; do not confuse that with the larger RSS difference.
+
+The full report and durable summary are in the sibling web worktree
+`../lean4-wasm-memory-lab/docs/memory-profile.md` and
+`../lean4-wasm-memory-lab/docs/experiments/memory-profile/summary.json`.
+Raw evidence is under `/tmp/lean-memory-profile/`.
+
+These are bounded desktop Chromium results, not exhaustive task scheduling,
+iOS/WebKit, snapshot-restoration, MODULARIZE, or external-minifier validation.
+The WASM file and its function table remained byte-identical. No deployment
+was performed.
 
 No application default or published artifact is changed by this experiment.
