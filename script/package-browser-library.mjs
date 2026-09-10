@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 cauli. All rights reserved.
+// Released under Apache 2.0 license as described in the file LICENSE.
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -274,6 +276,13 @@ if (actualMathlibCommit !== options.mathlibCommit) {
 
 const lakeManifestPath = path.join(options.workspace, 'lake-manifest.json')
 const lakeManifest = JSON.parse(fs.readFileSync(lakeManifestPath, 'utf8'))
+const adjustmentsPath = path.join(options.workspace, '.browser-library-adjustments.json')
+const buildAdjustments = fs.existsSync(adjustmentsPath)
+  ? JSON.parse(fs.readFileSync(adjustmentsPath, 'utf8'))
+  : { schemaVersion: 1, adjustments: [] }
+if (buildAdjustments.schemaVersion !== 1 || !Array.isArray(buildAdjustments.adjustments)) {
+  throw new Error(`Invalid browser workspace adjustments: ${adjustmentsPath}`)
+}
 const packagePins = (lakeManifest.packages ?? []).map((entry) => ({
   name: entry.name,
   url: entry.url,
@@ -350,6 +359,7 @@ const manifest = {
     leanToolchain: fs.readFileSync(path.join(options.workspace, 'lean-toolchain'), 'utf8').trim(),
     roots: options.roots,
     packages: packagePins,
+    buildAdjustments: buildAdjustments.adjustments,
   },
   files,
   packs,

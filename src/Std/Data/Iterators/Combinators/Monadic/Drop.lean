@@ -7,7 +7,6 @@ module
 
 prelude
 public import Init.Data.Iterators.Consumers.Loop
-public import Init.Data.Iterators.Internal.Termination
 
 @[expose] public section
 
@@ -53,9 +52,9 @@ it.drop 3   ------⊥
 Currently, this combinator incurs an additional O(1) cost with each output of `it`, even when the iterator
 does not drop any elements anymore.
 -/
-@[always_inline, inline]
+@[always_inline, inline, implicit_reducible]
 def IterM.drop (n : Nat) (it : IterM (α := α) m β) :=
-  IterM.mk (Iterators.Types.Drop.mk n it) m β
+  (⟨Iterators.Types.Drop.mk n it⟩ : IterM m β)
 
 namespace Iterators.Types
 
@@ -90,7 +89,7 @@ private def Drop.FiniteRel (m : Type w → Type w') [Iterator α m β] [Finite �
 private def Drop.instFinitenessRelation [Iterator α m β] [Monad m]
     [Finite α m] :
     FinitenessRelation (Drop α m β) m where
-  rel := Drop.FiniteRel m
+  Rel := Drop.FiniteRel m
   wf := by
     apply InvImage.wf
     exact WellFoundedRelation.wf
@@ -135,7 +134,7 @@ private theorem Drop.productiveRel_of_inner [Monad m] [Iterator α m β] [Produc
 private def Drop.instProductivenessRelation [Iterator α m β] [Monad m]
     [Productive α m] :
     ProductivenessRelation (Drop α m β) m where
-  rel := Drop.ProductiveRel m
+  Rel := Drop.ProductiveRel m
   wf := by
     apply InvImage.wf
     exact WellFoundedRelation.wf

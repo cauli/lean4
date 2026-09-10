@@ -1,87 +1,125 @@
 name: Build Batteries (linux_32)
-# Builds Batteries with the native i386 toolchain produced by the "Linux 32bit"
-# CI job, yielding 32-bit .olean/.ir trees the wasm playground can import
-# (pointer-width compatible with wasm32; same commit → same githash, which
-# CHECK_OLEAN_VERSION requires). Batteries has no package dependencies, so a
-# plain `lake build` suffices.
-#
-# Dispatch manually with the run id of a green CI run on this branch.
+# 🤖 Build import artifacts with the native i386 toolchain from a tested browser run.
 on:
   workflow_dispatch:
     inputs:
       toolchain_run_id:
-        description: 'CI run id to pull the build-Linux 32bit artifact from'
+        description: 'Browser toolchain run id with successful WASM and Linux 32bit jobs'
         required: true
       batteries_rev:
-        description: 'leanprover-community/batteries rev to build'
-        required: true
-        # nightly-testing-2025-12-25: pinned to lean4 nightly cut the same day
-        # as this fork's upstream base (c0d5e8bc2c), so stdlib API drift is ~nil.
-        default: '2b34cb1ec906fc05cd8e0993588896c99917f33b'
+        description: 'Optional full Batteries revision; defaults to the pinned Mathlib dependency'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
     steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Resolve source pins and verify input jobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TOOLCHAIN_RUN_ID: ${{ inputs.toolchain_run_id }}
+          REQUESTED_BATTERIES_REV: ${{ inputs.batteries_rev }}
+        run: |
+          [[ "$TOOLCHAIN_RUN_ID" =~ ^[0-9]+$ ]]
+          LOCK=.github/browser-mathlib-manifold-closure.lock.json
+          LEAN_UPSTREAM_COMMIT=$(jq -er '.lean.upstreamCommit' "$LOCK")
+          MATHLIB_COMMIT=$(jq -er '.mathlib.commit' "$LOCK")
+          test "$(jq -r '.mathlib.repository' "$LOCK")" = https://github.com/leanprover-community/mathlib4.git
+          gh api "repos/leanprover-community/mathlib4/contents/lake-manifest.json?ref=$MATHLIB_COMMIT" \
+            -H 'Accept: application/vnd.github.raw+json' > mathlib-lake-manifest.json
+          LOCKED_BATTERIES_REV=$(jq -er '.packages[] | select(.name == "batteries") | .rev' mathlib-lake-manifest.json)
+          BATTERIES_REV=${REQUESTED_BATTERIES_REV:-$LOCKED_BATTERIES_REV}
+          [[ "$BATTERIES_REV" =~ ^[0-9a-f]{40}$ ]]
+          RUN=$(gh api "repos/${{ github.repository }}/actions/runs/$TOOLCHAIN_RUN_ID")
+          test "$(jq -r '.repository.full_name' <<< "$RUN")" = "${{ github.repository }}"
+          test "$(jq -r '.head_repository.full_name' <<< "$RUN")" = "${{ github.repository }}"
+          test "$(jq -r '.path' <<< "$RUN")" = .github/workflows/browser.yml
+          LEAN_COMMIT=$(jq -er '.head_sha' <<< "$RUN")
+          COMPARE_STATUS=$(gh api "repos/${{ github.repository }}/compare/$LEAN_UPSTREAM_COMMIT...$LEAN_COMMIT" --jq '.status')
+          [[ "$COMPARE_STATUS" == ahead || "$COMPARE_STATUS" == identical ]]
+          RUN_JOBS=$(gh api "repos/${{ github.repository }}/actions/runs/$TOOLCHAIN_RUN_ID/jobs?per_page=100")
+          for JOB_NAME in 'Web Assembly' 'Linux 32bit'
+          do
+            jq -e --arg name "$JOB_NAME" \
+              '[.jobs[] | select((.name == ("build / " + $name) or .name == ("build-secondary / " + $name)) and .conclusion == "success")] | length == 1' \
+              <<< "$RUN_JOBS"
+          done
+          {
+            echo "LEAN_COMMIT=$LEAN_COMMIT"
+            echo "BATTERIES_REV=$BATTERIES_REV"
+            echo "LOCKED_BATTERIES_REV=$LOCKED_BATTERIES_REV"
+            echo "MATHLIB_COMMIT=$MATHLIB_COMMIT"
+          } >> "$GITHUB_ENV"
       - name: Install i386 runtime
         run: |
           sudo dpkg --add-architecture i386
           sudo apt-get update
-          # gcc-multilib: lake also compiles the emitted .c with -m32 (we ship
-          # only .olean/.ir, but letting the standard build complete validates
-          # the package and needs just the 32-bit libc headers).
-          sudo apt-get install -y libc6:i386 libstdc++6:i386 zlib1g:i386 libuv1:i386 zstd gcc-multilib g++-multilib
-          # 4.33 toolchains link libssl dynamically (4.28 did not)
-          sudo apt-get install -y libssl3t64:i386 || sudo apt-get install -y libssl3:i386
+          sudo apt-get install -y libc6:i386 libstdc++6:i386 zlib1g:i386 libuv1:i386 libssl3t64:i386 zstd gcc-multilib g++-multilib
       - name: Download toolchain artifact
         env:
           GH_TOKEN: ${{ github.token }}
+          TOOLCHAIN_RUN_ID: ${{ inputs.toolchain_run_id }}
+        run: gh run download "$TOOLCHAIN_RUN_ID" -R "${{ github.repository }}" -n "build-Linux 32bit" -D artifact
+      - name: Extract and verify toolchain
         run: |
-          gh run download ${{ inputs.toolchain_run_id }} -R ${{ github.repository }} -n "build-Linux 32bit" -D artifact
-          ls -la artifact
-      - name: Extract toolchain
-        run: |
-          tar --use-compress-program=unzstd -xf artifact/*.tar.zst
-          TOOLCHAIN=$(echo lean-*-linux_32)
-          echo "TOOLCHAIN=$PWD/$TOOLCHAIN" >> "$GITHUB_ENV"
-          ls -la "$TOOLCHAIN/bin"
-          file "$TOOLCHAIN"/bin/* 2>/dev/null | head
-          ldd "$TOOLCHAIN/bin/lean" 2>&1 | head -15
-          # lean --version exits non-zero here despite printing (exit 232 on
-          # both prior runs) — capture instead of dying so we can see why.
-          set +e
+          test "$(find artifact -maxdepth 1 -name '*.tar.zst' | wc -l)" -eq 1
+          mkdir toolchain
+          tar --use-compress-program=unzstd -xf artifact/*.tar.zst -C toolchain --strip-components=1
+          TOOLCHAIN="$PWD/toolchain"
+          echo "TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
+          file "$TOOLCHAIN/bin/lean" | grep 'ELF 32-bit'
           "$TOOLCHAIN/bin/lean" --version
-          echo "lean --version exit code: $?"
-          set -e
-          # The triple in --version is CMake's host triple; the ELF class is
-          # the ground truth — everything depends on 32-bit oleans.
-          if ! file "$TOOLCHAIN/bin/lean" | grep -q 'ELF 32-bit'; then
-            echo "::error::toolchain lean is not a 32-bit binary — its oleans would be 64-bit and useless for wasm32"
-            exit 1
-          fi
-      - name: Checkout Batteries
+          "$TOOLCHAIN/bin/lean" --githash > native-githash.txt
+          grep -qx "$LEAN_COMMIT" native-githash.txt
+      - name: Checkout exact Batteries source
         run: |
-          git clone https://github.com/leanprover-community/batteries batteries
-          git -C batteries checkout ${{ inputs.batteries_rev }}
+          git init batteries
+          git -C batteries remote add origin https://github.com/leanprover-community/batteries.git
+          git -C batteries fetch --depth=1 origin "$BATTERIES_REV"
+          git -C batteries checkout --detach FETCH_HEAD
+          test "$(git -C batteries rev-parse HEAD)" = "$BATTERIES_REV"
       - name: Build Batteries
         run: |
           export PATH="$TOOLCHAIN/bin:$PATH"
           cd batteries
-          # The library target only: the default set also links the runLinter
-          # executable, which we don't ship and which fails to link 32-bit.
           lake build Batteries
-      - name: Package oleans
+          printf 'import Batteries\n' > browser-import-check.lean
+          lake env lean browser-import-check.lean
+      - name: Package import artifacts and provenance
+        env:
+          TOOLCHAIN_RUN_ID: ${{ inputs.toolchain_run_id }}
         run: |
-          cd batteries/.lake/build/lib
-          # Lake nests oleans under lib/lean/ in recent versions, flat before.
-          [ -d lean ] && cd lean
-          # Ship what the playground loads: .olean plus .ir/.ir.sig — the runtime
-          # bodies live in .ir (the olean's decl map holds .extern stubs), and
-          # the reader only picks up an .ir when its .ir.sig sits beside it.
-          find . \( -name '*.olean' -o -name '*.ir' -o -name '*.ir.sig' \) | tar -cf - -T - | zstd -19 -T0 -o "$GITHUB_WORKSPACE/batteries-oleans-linux_32.tar.zst"
-          ls -la "$GITHUB_WORKSPACE/batteries-oleans-linux_32.tar.zst"
+          mkdir batteries-artifacts
+          cd batteries/.lake/build/lib/lean
+          find . \( -name '*.olean' -o -name '*.ir' -o -name '*.ir.sig' \) | sort | tar -cf - -T - | zstd -19 -T0 -o "$GITHUB_WORKSPACE/batteries-artifacts/batteries-oleans-linux_32.tar.zst"
+          cd "$GITHUB_WORKSPACE"
+          jq -n \
+            --arg repository "${{ github.repository }}" \
+            --arg lean "$LEAN_COMMIT" \
+            --arg workflow "$(git rev-parse HEAD)" \
+            --arg run "$TOOLCHAIN_RUN_ID" \
+            --arg batteries "$BATTERIES_REV" \
+            --arg toolchain "$(cat batteries/lean-toolchain)" \
+            --arg mathlib "$MATHLIB_COMMIT" \
+            --arg lockedBatteries "$LOCKED_BATTERIES_REV" \
+            '{schemaVersion: 1, lean: {repository: $repository, commit: $lean, workflowCommit: $workflow, toolchainRunId: $run}, batteries: {commit: $batteries, sourceToolchain: $toolchain, mathlibCommit: $mathlib, mathlibDependencyCommit: $lockedBatteries}}' \
+            > batteries-artifacts/manifest.json
+          cd batteries-artifacts
+          sha256sum manifest.json ./*.tar.zst > SHA256SUMS
+          sha256sum --check SHA256SUMS
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: batteries-oleans-linux_32
-          path: batteries-oleans-linux_32.tar.zst
+          path: batteries-artifacts
+          if-no-files-found: error
+          retention-days: 30
