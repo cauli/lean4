@@ -83,6 +83,39 @@ serialized modules must agree. It is not a link-flag-only upgrade.
 
 ## Build-time changes
 
+The full Web Assembly CI and Docker builds enable `EMSCRIPTEN_COMPACT_EXPORTS=ON`.
+This changes only JavaScript export assignment through Emscripten's
+`DECLARE_ASM_MODULE_EXPORTS=0`; the generated full export list, default dynamic
+linker, JS exception handling, and pthread settings stay unchanged. The CMake
+option defaults to OFF. The generic relink helper and slim build remain
+noncompact unless explicitly overridden. The old release's indexed-dlsym
+adapter is a separate optimization and is not ported here; compact assignment
+does not reproduce that adapter's lookup performance.
+
+Compact glue uses global assignments. Use the tested classic-script worker
+loading path; custom wrapping, `MODULARIZE`, and external minification need
+separate validation. Existing old-runtime compact results do not validate a
+new runtime or its snapshots. The old recipe is frozen at
+[`browser-62b6a22-compact1`](https://github.com/cauli/lean4/tree/browser-62b6a22-compact1)
+(`fb896a60f96`). Its 104,677-symbol list and pinned relink inputs remain separate
+from these generated build inputs.
+
+`python3 tests/wasm/check-compact-exports.py`, with the pinned Emscripten 4.0.22
+SDK active, checks default dynamic symbol lookup in both compact and normal
+glue, including i64 and cross-thread calls. It is a small SDK probe, not a Lean
+build or a substitute for the full Node, browser, and snapshot gates above.
+After both binaries are linked, check their assignment modes without running
+an SDK or loading the JavaScript:
+
+```sh
+python3 tests/wasm/check-compact-exports.py --check-built \
+  --full-js build/stage1/bin/lean.js --slim-js /tmp/slim-out/lean.js
+```
+
+This check requires the compact assignment loop in full glue and classic
+per-export assignment in slim glue. Size bounds catch unexpected output from
+the pinned SDK configuration; they are not a memory benchmark.
+
 Export lists are generated from declaration metadata and the actual archives,
 so they follow upstream symbol changes. The full variant retains boxed entry
 points needed by the interpreter; the slim variant uses the narrower set.

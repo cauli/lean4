@@ -1,69 +1,87 @@
 name: Debug import runaway (native i386)
-# Probes the 4.33 Init-import memory runaway with the NATIVE i386 stage1 binary
-# from a "Linux 32bit" CI run: first a plain run with an address-space cap and
-# peak-RSS measurement, then (if it ran away) valgrind massif for the
-# allocation tree with symbols. On wasm the same import consumes 4GB in ~1.2s;
-# 4.28 does it in <1s within ~hundreds of MB.
+# 🤖 Probe a public module with a tested i386 toolchain and bounded memory/time.
 on:
   workflow_dispatch:
     inputs:
       toolchain_run_id:
-        description: 'CI run id to pull the build-Linux 32bit artifact from'
+        description: 'Run id with a successful Linux 32bit toolchain job'
         required: true
       import_target:
-        description: 'Module to import in the probe file'
+        description: 'Public module to import in the probe file'
         required: true
         default: 'Init.Prelude'
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
   probe:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - name: Install i386 runtime + valgrind
+      - name: Verify input job and module name
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TOOLCHAIN_RUN_ID: ${{ inputs.toolchain_run_id }}
+          IMPORT_TARGET: ${{ inputs.import_target }}
+        run: |
+          [[ "$TOOLCHAIN_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$IMPORT_TARGET" =~ ^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$ ]]
+          RUN=$(gh api "repos/${{ github.repository }}/actions/runs/$TOOLCHAIN_RUN_ID")
+          test "$(jq -r '.repository.full_name' <<< "$RUN")" = "${{ github.repository }}"
+          test "$(jq -r '.head_repository.full_name' <<< "$RUN")" = "${{ github.repository }}"
+          test "$(jq -r '.path' <<< "$RUN")" = .github/workflows/browser.yml
+          LEAN_COMMIT=$(jq -er '.head_sha' <<< "$RUN")
+          gh api "repos/${{ github.repository }}/actions/runs/$TOOLCHAIN_RUN_ID/jobs?per_page=100" \
+            --jq '[.jobs[] | select((.name == "build / Linux 32bit" or .name == "build-secondary / Linux 32bit") and .conclusion == "success")] | length' \
+            | grep -qx 1
+          echo "LEAN_COMMIT=$LEAN_COMMIT" >> "$GITHUB_ENV"
+      - name: Install i386 runtime and valgrind
         run: |
           sudo dpkg --add-architecture i386
-          # tolerate unrelated-repo flakes (e.g. packages.microsoft.com signature outages)
-          sudo apt-get update || true
-          # libssl3t64: 4.33 links libssl dynamically (4.28 did not)
+          sudo apt-get update
           sudo apt-get install -y libc6:i386 libstdc++6:i386 zlib1g:i386 libuv1:i386 libssl3t64:i386 zstd valgrind libc6-dbg:i386
       - name: Download toolchain artifact
         env:
           GH_TOKEN: ${{ github.token }}
+          TOOLCHAIN_RUN_ID: ${{ inputs.toolchain_run_id }}
+        run: gh run download "$TOOLCHAIN_RUN_ID" -R "${{ github.repository }}" -n "build-Linux 32bit" -D artifact
+      - name: Extract and verify toolchain
         run: |
-          gh run download ${{ inputs.toolchain_run_id }} -R ${{ github.repository }} -n "build-Linux 32bit" -D artifact
-      - name: Extract toolchain
-        run: |
-          tar --use-compress-program=unzstd -xf artifact/*.tar.zst
-          TOOLCHAIN=$(echo lean-*-linux_32)
-          echo "TOOLCHAIN=$PWD/$TOOLCHAIN" >> "$GITHUB_ENV"
-          # tolerate the fork's nonzero --version exit (prints fine, exits 232)
-          "$TOOLCHAIN/bin/lean" --version || true
+          test "$(find artifact -maxdepth 1 -name '*.tar.zst' | wc -l)" -eq 1
+          mkdir toolchain
+          tar --use-compress-program=unzstd -xf artifact/*.tar.zst -C toolchain --strip-components=1
+          TOOLCHAIN="$PWD/toolchain"
+          echo "TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
+          file "$TOOLCHAIN/bin/lean" | grep 'ELF 32-bit'
+          "$TOOLCHAIN/bin/lean" --version
+          "$TOOLCHAIN/bin/lean" --githash > native-githash.txt
+          grep -qx "$LEAN_COMMIT" native-githash.txt
       - name: 'Probe 1: plain run, 3GB address-space cap, peak RSS'
+        env:
+          IMPORT_TARGET: ${{ inputs.import_target }}
         run: |
-          echo "import ${{ inputs.import_target }}" > probe.lean
+          printf 'import %s\n' "$IMPORT_TARGET" > probe.lean
           export LEAN_PATH="$TOOLCHAIN/lib/lean"
           set +e
-          ( ulimit -v 3145728; /usr/bin/time -v "$TOOLCHAIN/bin/lean" probe.lean ) 2>&1 | tail -25
-          code=$?
+          ( ulimit -v 3145728; timeout 120 /usr/bin/time -v "$TOOLCHAIN/bin/lean" probe.lean ) 2>&1 | tail -25
+          code=${PIPESTATUS[0]}
           set -e
           echo "exit code: $code"
           if [ "$code" -eq 0 ]; then
-            echo "NO NATIVE RUNAWAY — import completed within the cap. Bug is Emscripten-specific."
+            echo "Native import completed within the memory and time limits."
           else
-            echo "NATIVE REPRO — import died under a 3GB cap. Massif tree follows."
+            echo "Native import failed or hit a limit. Inspect the error before attributing the cause."
           fi
           echo "code=$code" >> "$GITHUB_ENV"
-      - name: 'Probe 2: valgrind massif allocation tree (only on repro)'
+      - name: 'Probe 2: valgrind massif allocation tree (only on failure)'
         if: env.code != '0'
         run: |
           export LEAN_PATH="$TOOLCHAIN/lib/lean"
-          # Cap the run so massif snapshots the growth phase, not a 6h hang.
           timeout 600 valgrind --tool=massif --threshold=2.0 \
             --massif-out-file=massif.out "$TOOLCHAIN/bin/lean" probe.lean || true
-          ms_print massif.out | head -120
-      - name: Upload massif data
-        if: env.code != '0'
-        uses: actions/upload-artifact@v4
-        with:
-          name: massif-out
-          path: massif.out
+          if [ -f massif.out ]; then
+            ms_print massif.out > massif-summary.txt
+            head -120 massif-summary.txt
+          fi

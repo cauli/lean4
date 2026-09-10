@@ -7,11 +7,13 @@ on:
 jobs:
   restart-on-label:
     runs-on: ubuntu-latest
-    if: contains(github.event.label.name, 'merge-ci') ||
-      contains(github.event.label.name, 'release-ci') ||
-      contains(github.event.label.name, 'lake-ci') ||
-      contains(github.event.label.name, 'fsanitize-ci') ||
-      contains(github.event.label.name, 'macos-arm-ci')
+    if: >
+      github.repository == 'leanprover/lean4' && (
+        contains(github.event.label.name, 'merge-ci') ||
+        contains(github.event.label.name, 'release-ci') ||
+        contains(github.event.label.name, 'lake-ci') ||
+        contains(github.event.label.name, 'fsanitize-ci') ||
+        contains(github.event.label.name, 'macos-arm-ci'))
     steps:
     - run: |
         # Finding latest CI workflow run on current pull request

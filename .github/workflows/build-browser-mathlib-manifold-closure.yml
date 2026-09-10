@@ -23,10 +23,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
-      - name: Checkout exact Lean fork revision
+      - name: Checkout sidecar tooling and lock
         uses: actions/checkout@v5
         with:
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -47,6 +48,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TOOLCHAIN_RUN_ID: ${{ inputs.toolchain_run_id }}
         run: |
+          [[ "$TOOLCHAIN_RUN_ID" =~ ^[0-9]+$ ]]
           LOCK=.github/browser-mathlib-manifold-closure.lock.json
           WORKFLOW_COMMIT=$(git rev-parse HEAD)
           LEAN_UPSTREAM_COMMIT=$(jq -r '.lean.upstreamCommit' "$LOCK")
@@ -56,9 +58,11 @@ jobs:
           ROOT_MODULES_JSON=$(jq -c '.mathlib.roots | if length > 0 then . else error("at least one root module is required") end' "$LOCK")
           LAYER_ID=$(jq -r '.layerId' "$LOCK")
 
-          RUN_REPOSITORY=$(gh api "repos/${{ github.repository }}/actions/runs/$TOOLCHAIN_RUN_ID" --jq '.repository.full_name')
-          RUN_COMMIT=$(gh api "repos/${{ github.repository }}/actions/runs/$TOOLCHAIN_RUN_ID" --jq '.head_sha')
-          test "$RUN_REPOSITORY" = "${{ github.repository }}"
+          RUN=$(gh api "repos/${{ github.repository }}/actions/runs/$TOOLCHAIN_RUN_ID")
+          test "$(jq -r '.repository.full_name' <<< "$RUN")" = "${{ github.repository }}"
+          test "$(jq -r '.head_repository.full_name' <<< "$RUN")" = "${{ github.repository }}"
+          test "$(jq -r '.path' <<< "$RUN")" = .github/workflows/browser.yml
+          RUN_COMMIT=$(jq -er '.head_sha' <<< "$RUN")
 
           COMPARE_STATUS=$(gh api \
             "repos/${{ github.repository }}/compare/$LEAN_UPSTREAM_COMMIT...$RUN_COMMIT" \
@@ -100,18 +104,20 @@ jobs:
           ref: ${{ steps.pins.outputs.lean_commit }}
           path: lean-toolchain-source
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Download matching native and browser toolchains
         env:
           GH_TOKEN: ${{ github.token }}
+          TOOLCHAIN_RUN_ID: ${{ inputs.toolchain_run_id }}
         run: |
           gh run download \
-            "${{ inputs.toolchain_run_id }}" \
+            "$TOOLCHAIN_RUN_ID" \
             -R "${{ github.repository }}" \
             -n "build-Linux 32bit" \
             -D artifacts/linux32
           gh run download \
-            "${{ inputs.toolchain_run_id }}" \
+            "$TOOLCHAIN_RUN_ID" \
             -R "${{ github.repository }}" \
             -n "build-Web Assembly" \
             -D artifacts/wasm32
@@ -172,6 +178,8 @@ jobs:
           lake build "${ROOT_MODULES[@]}"
 
       - name: Package the browser dependency closure
+        env:
+          TOOLCHAIN_RUN_ID: ${{ inputs.toolchain_run_id }}
         run: |
           ROOT_ARGS=()
           while IFS= read -r ROOT_MODULE
@@ -192,7 +200,7 @@ jobs:
             --workflow-commit "$WORKFLOW_COMMIT" \
             --mathlib-repository "$MATHLIB_REPOSITORY" \
             --mathlib-commit "$MATHLIB_COMMIT" \
-            --toolchain-run-id "${{ inputs.toolchain_run_id }}"
+            --toolchain-run-id "$TOOLCHAIN_RUN_ID"
 
       - name: Validate and checksum artifact
         run: |

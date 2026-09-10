@@ -12,7 +12,7 @@ on:
 
 jobs:
   update-label:
-    if: github.event.issue.pull_request != null && (contains(github.event.comment.body, 'awaiting-review') || contains(github.event.comment.body, 'awaiting-author') || contains(github.event.comment.body, 'WIP') || contains(github.event.comment.body, 'release-ci') || contains(github.event.comment.body, 'lake-ci') || contains(github.event.comment.body, 'changelog-'))
+    if: github.repository == 'leanprover/lean4' && (github.event.issue.pull_request != null && (contains(github.event.comment.body, 'awaiting-review') || contains(github.event.comment.body, 'awaiting-author') || contains(github.event.comment.body, 'WIP') || contains(github.event.comment.body, 'release-ci') || contains(github.event.comment.body, 'lake-ci') || contains(github.event.comment.body, 'changelog-')))
     runs-on: ubuntu-latest
 
     steps:

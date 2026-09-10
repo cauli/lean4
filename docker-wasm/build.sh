@@ -34,6 +34,7 @@ cmake /lean4 \
     -DUSE_MIMALLOC=OFF \
     -DMMAP=OFF \
     -DSTAGE0_MMAP=OFF \
+    -DEMSCRIPTEN_COMPACT_EXPORTS=ON \
     -DEMSCRIPTEN_DEBUG=${EMSCRIPTEN_DEBUG:-OFF} \
     -DCMAKE_AR=${EMSDK}/upstream/emscripten/emar \
     -DCMAKE_TOOLCHAIN_FILE=${EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake \

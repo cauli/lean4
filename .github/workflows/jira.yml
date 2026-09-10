@@ -6,6 +6,7 @@ on:
 
 jobs:
   jira-sync:
+    if: github.repository == 'leanprover/lean4'
     runs-on: ubuntu-latest
 
     steps:

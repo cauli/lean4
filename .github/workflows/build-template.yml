@@ -348,6 +348,11 @@ jobs:
           mkdir -p "$dir/bin-slim"
           cp /tmp/slim-out/lean.js /tmp/slim-out/lean.wasm "$dir/bin-slim/"
           ls -la "$dir"/bin-slim/
+      - name: Check full and slim export assignment modes
+        if: matrix.wasm && matrix.browser
+        run: |
+          python3 tests/wasm/check-compact-exports.py --check-built \
+            --full-js "build/$TARGET_STAGE/bin/lean.js" --slim-js /tmp/slim-out/lean.js
       - name: Test browser API with the native i386 toolchain
         if: matrix.browser && !matrix.wasm
         run: |
