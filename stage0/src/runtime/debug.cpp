@@ -51,6 +51,16 @@ void notify_assertion_violation(const char * fileName, int line, const char * co
     std::cerr << "Line: " << line << "\n";
     std::cerr << condition << "\n";
     std::cerr.flush();
+    // #region agent log
+#if defined(LEAN_EMSCRIPTEN)
+    EM_ASM({
+        console.log("[DEBUG:ASSERT] ASSERTION VIOLATION:");
+        console.log("[DEBUG:ASSERT] File: " + UTF8ToString($0));
+        console.log("[DEBUG:ASSERT] Line: " + $1);
+        console.log("[DEBUG:ASSERT] Condition: " + UTF8ToString($2));
+    }, fileName, line, condition);
+#endif
+    // #endregion
 }
 
 void enable_debug(char const * tag) {
@@ -146,3 +156,14 @@ extern "C" LEAN_EXPORT void lean_notify_assert(const char * fileName, int line, 
     invoke_debugger();
 }
 }
+
+#ifdef LEAN_EMSCRIPTEN
+// Under MAIN_MODULE dynamic linking, libunwind references dl_iterate_phdr to
+// walk loaded modules for EH frame data; nothing provides it in the
+// Emscripten link, which leaves a required-but-unresolved GOT entry that
+// emsdk 6's loader crashes on (its undefined-symbol reporter dereferences
+// the missing binding). There are no modules to walk — report none.
+extern "C" LEAN_EXPORT int dl_iterate_phdr(int (*)(void *, unsigned long, void *), void *) {
+    return 0;
+}
+#endif

@@ -6,11 +6,18 @@ Authors: Luke Nelson, Jared Roesch, Leonardo de Moura, Sebastian Ullrich, Mac Ma
 module
 
 prelude
+public import Init.Control.Do
 public import Init.System.IOError
 public import Init.System.FilePath
-public import Init.Data.Ord.UInt
 import Init.Data.String.TakeDrop
 import Init.Data.String.Search
+public import Init.Data.Ord.Basic
+public import Init.Data.String.Basic
+import Init.Data.List.MapIdx
+import Init.Data.Ord.UInt
+import Init.Data.ToString.Macro
+import Init.Data.List.Impl
+import Init.Data.Int.Repr
 
 public section
 
@@ -561,7 +568,7 @@ Waits for the task to finish, then returns its result.
   return t.get
 
 /--
-Waits until any of the tasks in the list has finished, then return its result.
+Waits until any of the tasks in the list has finished, then returns its result.
 -/
 @[extern "lean_io_wait_any"] opaque waitAny (tasks : @& List (Task α))
     (h : tasks.length > 0 := by exact Nat.zero_lt_succ _) : BaseIO α :=
@@ -679,7 +686,7 @@ File handles wrap the underlying operating system's file descriptors. There is n
 to close a file: when the last reference to a file handle is dropped, the file is closed
 automatically.
 
-Handles have an associated read/write cursor that determines the where reads and writes occur in the
+Handles have an associated read/write cursor that determines where reads and writes occur in the
 file.
 -/
 opaque FS.Handle : Type := Unit
@@ -790,7 +797,7 @@ An exception is thrown if the file cannot be opened.
 /--
 Acquires an exclusive or shared lock on the handle. Blocks to wait for the lock if necessary.
 
-Acquiring a exclusive lock while already possessing a shared lock will **not** reliably succeed: it
+Acquiring an exclusive lock while already possessing a shared lock will **not** reliably succeed: it
 works on Unix-like systems but not on Windows.
 -/
 @[extern "lean_io_prim_handle_lock"] opaque lock (h : @& Handle) (exclusive := true) : IO Unit
@@ -798,7 +805,7 @@ works on Unix-like systems but not on Windows.
 Tries to acquire an exclusive or shared lock on the handle and returns `true` if successful. Will
 not block if the lock cannot be acquired, but instead returns `false`.
 
-Acquiring a exclusive lock while already possessing a shared lock will **not** reliably succeed: it
+Acquiring an exclusive lock while already possessing a shared lock will **not** reliably succeed: it
 works on Unix-like systems but not on Windows.
 -/
 @[extern "lean_io_prim_handle_try_lock"] opaque tryLock (h : @& Handle) (exclusive := true) : IO Bool
@@ -1019,7 +1026,7 @@ and/or return data.
 partial def Handle.lines (h : Handle) : IO (Array String) := do
   let rec read (lines : Array String) := do
     let line ← h.getLine
-    if line.length == 0 then
+    if line.isEmpty then
       pure lines
     else if line.back == '\n' then
       let line := line.dropEnd 1 |>.copy
@@ -1117,6 +1124,8 @@ structure Metadata where
   Whether the file is an ordinary file, a directory, a symbolic link, or some other kind of file.
   -/
   type     : FileType
+  /-- The number of hard links to the file. -/
+  numLinks : UInt64
   deriving Repr
 
 end FS
@@ -1350,7 +1359,7 @@ def withTempFile [Monad m] [MonadFinally m] [MonadLiftT IO m] (f : Handle → Fi
     removeFile path
 
 /--
-Creates a temporary directory in the most secure manner possible, providing a its path to an `IO`
+Creates a temporary directory in the most secure manner possible, providing its path to an `IO`
 action. Afterwards, all files in the temporary directory are recursively deleted, regardless of how
 or when they were created.
 
@@ -1480,7 +1489,7 @@ possible to close the child's standard input before the process terminates, whic
 @[extern "lean_io_process_spawn"] opaque spawn (args : SpawnArgs) : IO (Child args.toStdioConfig)
 
 /--
-Blocks until the child process has exited and return its exit code.
+Blocks until the child process has exited and returns its exit code.
 -/
 @[extern "lean_io_process_child_wait"] opaque Child.wait {cfg : @& StdioConfig} : @& Child cfg → IO UInt32
 
@@ -1586,7 +1595,7 @@ end Process
 /--
 POSIX-style file permissions.
 
-The `FileRight` structure describes these permissions for a file's owner, members of it's designated
+The `FileRight` structure describes these permissions for a file's owner, members of its designated
 group, and all others.
 -/
 structure AccessRight where
@@ -1662,37 +1671,6 @@ Creates a new mutable reference cell that contains `a`.
 -/
 def mkRef (a : α) : BaseIO (IO.Ref α) :=
   ST.mkRef a
-
-/--
-Mutable cell that can be passed around for purposes of cooperative task cancellation: request
-cancellation with `CancelToken.set` and check for it with `CancelToken.isSet`.
-
-This is a more flexible alternative to `Task.cancel` as the token can be shared between multiple
-tasks.
--/
-structure CancelToken where
-  private ref : IO.Ref Bool
-deriving Nonempty
-
-namespace CancelToken
-
-/-- Creates a new cancellation token. -/
-def new : BaseIO CancelToken :=
-  CancelToken.mk <$> IO.mkRef false
-
-/-- Activates a cancellation token. Idempotent. -/
-def set (tk : CancelToken) : BaseIO Unit :=
-  tk.ref.set true
-
-/-- Checks whether the cancellation token has been activated. -/
-def isSet (tk : CancelToken) : BaseIO Bool :=
-  tk.ref.get
-
--- separate definition as otherwise no unboxed version is generated
-@[export lean_io_cancel_token_is_set]
-private def isSetExport := @isSet
-
-end CancelToken
 
 namespace FS
 namespace Stream
@@ -1802,7 +1780,7 @@ and/or return data.
 partial def lines (s : Stream) : IO (Array String) := do
   let rec read (lines : Array String) := do
     let line ← s.getLine
-    if line.length == 0 then
+    if line.isEmpty then
       pure lines
     else if line.back == '\n' then
       let line := line.dropEnd 1 |>.copy
@@ -1863,7 +1841,7 @@ unsafe def Runtime.markPersistent (a : α) : BaseIO α := return a
 
 set_option linter.unusedVariables false in
 /--
-Discards the passed owned reference. This leads to `a` any any object reachable from it never being
+Discards the passed owned reference. This leads to `a` and any object reachable from it never being
 freed. This can be a useful optimization for eliding deallocation time of big object graphs that are
 kept alive close to the end of the process anyway (in which case calling `Runtime.markPersistent`
 would be similarly costly to deallocation). It is still considered a safe operation as it cannot
@@ -1871,3 +1849,12 @@ lead to undefined behavior.
 -/
 @[extern "lean_runtime_forget"]
 def Runtime.forget (a : α) : BaseIO Unit := return
+
+set_option linter.unusedVariables false in
+/--
+Ensures `a` remains at least alive until the call site by holding a reference to `a`. This can be useful
+for unsafe code (such as an FFI) that relies on a Lean object not being freed until after some point
+in the program. At runtime, this will be a no-op as the C compiler will optimize away this call.
+-/
+@[extern "lean_runtime_hold"]
+def Runtime.hold (a : @& α) : BaseIO Unit := return
