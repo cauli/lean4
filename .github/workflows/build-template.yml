@@ -353,6 +353,12 @@ jobs:
         run: |
           python3 tests/wasm/cli-smoke.py "build/$TARGET_STAGE/bin/lean"
           build/$TARGET_STAGE/bin/lean --run tests/wasm/native-smoke.lean
+      - name: Set up Node for WASM runtime tests
+        if: matrix.wasm
+        uses: actions/setup-node@v4
+        with:
+          # The full binary exceeds the older V8 limit of 100,000 exports.
+          node-version: 24
       - name: Test persistent WASM API in Node
         if: matrix.wasm
         timeout-minutes: 10
