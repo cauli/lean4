@@ -1,3 +1,4 @@
+_emscripten_runtime_keepalive_push
 _free
 _initialize_Init
 _initialize_Init_BinderNameHint
