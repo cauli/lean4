@@ -468,7 +468,9 @@ jobs:
             core.setOutput('matrix-secondary', matrix.filter((job) => job["secondary"]));
 
   build:
-    if: github.event_name != 'schedule' || github.repository == 'leanprover/lean4'
+    # This fork enables only the secondary wasm and 32-bit jobs at the default
+    # check level, and a reusable workflow fed an empty matrix fails outright.
+    if: (github.event_name != 'schedule' || github.repository == 'leanprover/lean4') && needs.configure.outputs.matrix != '[]'
     needs: [configure]
     uses: ./.github/workflows/build-template.yml
     with:
