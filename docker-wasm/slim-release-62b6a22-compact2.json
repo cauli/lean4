@@ -98,5 +98,14 @@
       "sha256": "4ef06c0a514e486d9b590a69f5e311c6a0a372cea64407aedc8c63033a836d4e"
     }
   },
-  "outputs": {}
+  "outputs": {
+    "lean.js": {
+      "bytes": 3430296,
+      "sha256": "1bb3b3e4367bb633fb48a0b4aaf0f236c819b8938841335683b38c3b2f62457e"
+    },
+    "lean.wasm": {
+      "bytes": 70444966,
+      "sha256": "e3499ffc9414d178b1735fe82254284163d8f57046c977d74f04c0c8fc23a8f4"
+    }
+  }
 }

@@ -100,5 +100,14 @@
       "sha256": "4ef06c0a514e486d9b590a69f5e311c6a0a372cea64407aedc8c63033a836d4e"
     }
   },
-  "outputs": {}
+  "outputs": {
+    "lean.js": {
+      "bytes": 148585,
+      "sha256": "075218cc9663757f8ca22ba5bdcac9423ebcc21feb102c274c5fe29150ee077a"
+    },
+    "lean.wasm": {
+      "bytes": 100838905,
+      "sha256": "08d3ae8ee5dec8bae165ad5102e604eca016d74d2303e0b5748690df679a764e"
+    }
+  }
 }

@@ -1,12 +1,25 @@
 <!-- Copyright (c) 2026 cauli. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE. -->
 
-# Full desktop compact release: 62b6a22
+# Compact releases of 62b6a22: compact2
 
-This recipe relinks the **validated old kit**, not a new Lean build. It retains
-all 104,677 canonical exports, including boxed wrappers. It selects compact JS
-export declarations and the exact validated indexed-dlsym adapter.
+This recipe relinks the **validated old kit**, not a new Lean build. The full
+variant retains all canonical exports, including boxed wrappers, and selects
+compact JS export declarations and the exact validated indexed-dlsym adapter.
+The slim variant links the kit's slim list the way CI's slim step does.
 It does not upload assets, change application mounts, or deploy a site.
+
+compact2 is compact1 plus one export in both lists,
+`_emscripten_runtime_keepalive_push`. The build links with `EXIT_RUNTIME=1`, so a
+host that calls `lean_wasm_compile` without running `main()` must hold a
+keepalive reference. Otherwise the first event-loop callback after a Lean thread
+proxies work to the main thread exits the runtime and closes stdin, stdout and
+stderr. The function lives in the JS glue, so both `lean.wasm` files are
+byte-identical to compact1's and only the two `lean.js` files change.
+
+compact1 is reproducible from its own recipe commit, `fb896a60f96`, with the
+manifest `desktop-release-62b6a22.json` it pinned. That manifest is not on this
+branch because its export-list input no longer matches.
 
 ## Two commit identities
 
@@ -24,26 +37,29 @@ files, sources, and package bundles. Do not relabel a new kit's `githash.txt`.
 
 ## Pinned inputs and outputs
 
-[`desktop-release-62b6a22.json`](desktop-release-62b6a22.json) records byte sizes
-and SHA256 for every file in the old kit, the two versioned source inputs, and
-the expected outputs. The adapter was copied byte-for-byte; its source comments
-were not rewritten.
+[`desktop-release-62b6a22-compact2.json`](desktop-release-62b6a22-compact2.json)
+(full) and [`slim-release-62b6a22-compact2.json`](slim-release-62b6a22-compact2.json)
+(slim) record byte sizes and SHA256 for every file in the old kit, each
+variant's versioned source inputs, and the expected outputs. The adapter was
+copied byte-for-byte; its source comments were not rewritten.
 
-| Input | SHA256 |
-| --- | --- |
-| `src/wasm-dlsym.js` | `264f000882cad81e4ed3484a0e3c545d7b533ae9ca06e34041b730afeb699da7` |
-| `src/emscripten-exports.txt` | `1049f282260f3a18e1cf8bfe9b24355a3e515c54a4321d5ab2bd698f1a57a956` |
+| Input | Entries | SHA256 |
+| --- | ---: | --- |
+| `src/wasm-dlsym.js` (full) | | `264f000882cad81e4ed3484a0e3c545d7b533ae9ca06e34041b730afeb699da7` |
+| `src/emscripten-exports.txt` (full) | 104,678 | `3db8e1448c87a7ef397b36cc48c4e990dc6c3300c0b76b61e7d95247e4bc3c9c` |
+| `src/emscripten-exports-slim.txt` (slim) | 16,928 | `f0fe95b7cd389167a106b6d9439a5635ff12aa009b908cf8c64ea475845938a2` |
 
-The source export list is the canonical 104,677-entry list. It equals the old
-kit's `emscripten-exports-canonical.txt`, **not** the kit's smaller default
-`emscripten-exports.txt`. The full recipe explicitly overrides that default
-with the versioned source list. It accepts no extra linker arguments.
+The full list is the kit's canonical 104,677-entry
+`emscripten-exports-canonical.txt` plus the keepalive export. The slim list is
+the kit's smaller default `emscripten-exports.txt` plus the same export. Each
+recipe overrides the kit default with its versioned list and accepts no extra
+linker arguments.
 
 Pinned settings:
 
 - Emscripten SDK **4.0.22**, `-O3`, JS exception handling
   (`DISABLE_EXCEPTION_CATCHING=0`), pthreads, and `MAIN_MODULE=2`.
-- `DECLARE_ASM_MODULE_EXPORTS=0` and the versioned adapter.
+- Full only: `DECLARE_ASM_MODULE_EXPORTS=0` and the versioned adapter.
 - Four eager workers, a 16 MiB stack, **link-time** initial memory of 64 MiB,
   maximum memory of 4 GiB, and memory growth enabled.
 - The same incoming Module APIs and exported runtime methods as
@@ -54,12 +70,16 @@ comparison used 2 GiB. Changing application capacity is not part of this recipe.
 
 | Output | Bytes | SHA256 |
 | --- | ---: | --- |
-| `lean.js` | 148,402 | `63aa7b004435f3d90cf19d7c3b3e3284726701ea06da8bc70b015125e1a38b24` |
-| `lean.wasm` | 100,838,905 | `08d3ae8ee5dec8bae165ad5102e604eca016d74d2303e0b5748690df679a764e` |
+| full `lean.js` | 148,585 | `075218cc9663757f8ca22ba5bdcac9423ebcc21feb102c274c5fe29150ee077a` |
+| full `lean.wasm` | 100,838,905 | `08d3ae8ee5dec8bae165ad5102e604eca016d74d2303e0b5748690df679a764e` |
+| slim `lean.js` | 3,430,296 | `1bb3b3e4367bb633fb48a0b4aaf0f236c819b8938841335683b38c3b2f62457e` |
+| slim `lean.wasm` | 70,444,966 | `e3499ffc9414d178b1735fe82254284163d8f57046c977d74f04c0c8fc23a8f4` |
 
-These are the previously validated compact bytes, not results from a new build
-of the recipe commit. See [the experiment record](COMPACT_EXPORTS_EXPERIMENT.md)
-for the Node and desktop Chromium results and their limits.
+Before pinning these, the same SDK and kit reproduced compact1's full outputs
+(`lean.js` `63aa7b00…`, `lean.wasm` `08d3ae8e…`) and the earlier slim pair
+(`cfb1e66d…`, `e3499ffc…`) byte for byte. See
+[the experiment record](COMPACT_EXPORTS_EXPERIMENT.md) for compact1's Node and
+desktop Chromium results and their limits.
 
 ## Guarded local relink
 
@@ -81,7 +101,11 @@ refuses before linking, because its outputs would dirty the recipe checkout.
 source /path/to/emsdk/emsdk_env.sh
 python3 docker-wasm/relink-desktop-release.py \
   /path/to/linkkit-62b6a22/linkkit \
-  "$PWD/build/desktop-compact-62b6a22/bin"
+  "$PWD/build/desktop-compact2-62b6a22/bin"
+python3 docker-wasm/relink-desktop-release.py \
+  --manifest docker-wasm/slim-release-62b6a22-compact2.json \
+  /path/to/linkkit-62b6a22/linkkit \
+  "$PWD/build/slim-compact2-62b6a22/bin"
 ```
 
 The script verifies inputs before and after linking, checks the SDK version,
@@ -167,7 +191,8 @@ CMake's compact option remains OFF by default. When ON, the full executable
 links the versioned adapter as well as selecting compact JS declarations.
 
 `relink-local.sh` is unchanged because slim callers also use it. This release
-neither prunes the full export list nor changes slim/mobile artifacts.
+does not prune the full export list. Its slim pair differs from the earlier slim
+pair only by the keepalive export in the glue.
 It targets classic scripts loaded with `importScripts`. It does not establish
 support for iOS/WebKit, `MODULARIZE`, external wrapping/minification, or snapshot
 restoration. Do not infer a snapshot pass from identical WASM bytes alone.
