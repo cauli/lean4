@@ -110,6 +110,29 @@ class ReleaseGuards(unittest.TestCase):
         self.assertIn(f"-sEXPORTED_FUNCTIONS=@{self.repo / 'src/emscripten-exports.txt'}", command)
         self.assertEqual(command[command.index("--js-library") + 1], str(self.repo / "src/wasm-dlsym.js"))
 
+    def test_slim_argv_skips_compact_flags(self):
+        self.add_file("src/emscripten-exports-slim.txt", "_one\n", recipe=True)
+        manifest = {"export_list": "src/emscripten-exports-slim.txt", "compact": False}
+        command = release.link_command(self.repo, self.kit, self.base / "out", manifest)
+        self.assertIn(f"-sEXPORTED_FUNCTIONS=@{self.repo / 'src/emscripten-exports-slim.txt'}", command)
+        self.assertNotIn("--js-library", command)
+        self.assertNotIn("-sDECLARE_ASM_MODULE_EXPORTS=0", command)
+
+    def test_export_count_follows_manifest_list(self):
+        self.add_file("src/emscripten-exports-slim.txt", "_one\n", recipe=True)
+        self.manifest["export_list"] = "src/emscripten-exports-slim.txt"
+        with self.assertRaisesRegex(release.ReleaseError, "export count"):
+            self.verify()
+        self.manifest["export_count"] = 1
+        self.verify()
+
+    def test_unpinned_outputs_are_rejected(self):
+        output = self.base / "output"
+        output.mkdir()
+        (output / "lean.js").write_text("glue")
+        with self.assertRaisesRegex(release.ReleaseError, "pins no outputs"):
+            release.verify_outputs(output, self.manifest)
+
     def test_mismatched_output_is_rejected(self):
         output = self.base / "output"
         output.mkdir()
@@ -215,10 +238,23 @@ class ReleaseGuards(unittest.TestCase):
     def test_real_versioned_inputs_match_recorded_release(self):
         manifest = release.load_manifest(ROOT)
         release.verify_files(ROOT, manifest["recipe_inputs"])
-        self.assertEqual(manifest["export_count"], 104677)
+        self.assertEqual(manifest["export_count"], 104678)
         self.assertEqual(manifest["runtime_git_sha"], "62b6a2291302d4bbeace37642a066b7510d0145c")
         self.assertEqual(manifest["recipe_inputs"]["src/wasm-dlsym.js"]["sha256"],
                          "264f000882cad81e4ed3484a0e3c545d7b533ae9ca06e34041b730afeb699da7")
+
+    def test_real_slim_manifest_pins_its_own_list(self):
+        manifest = release.load_manifest(ROOT, "docker-wasm/slim-release-62b6a22-compact2.json")
+        release.verify_files(ROOT, manifest["recipe_inputs"])
+        self.assertEqual(manifest["export_list"], "src/emscripten-exports-slim.txt")
+        self.assertFalse(manifest["compact"])
+        self.assertEqual(manifest["export_count"], 16928)
+        self.assertEqual(manifest["kit_files"], release.load_manifest(ROOT)["kit_files"])
+
+    def test_both_lists_export_the_runtime_keepalive(self):
+        for name in ["src/emscripten-exports.txt", "src/emscripten-exports-slim.txt"]:
+            with self.subTest(name=name):
+                self.assertIn("_emscripten_runtime_keepalive_push", (ROOT / name).read_text().splitlines())
 
     def test_generic_relink_remains_noncompact_by_default(self):
         generic = (ROOT / "docker-wasm/relink-local.sh").read_text()

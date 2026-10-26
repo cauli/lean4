@@ -14,8 +14,10 @@ import shutil
 import subprocess
 import sys
 
-MANIFEST = "docker-wasm/desktop-release-62b6a22.json"
-RECIPE_FILES = [MANIFEST, "docker-wasm/relink-desktop-release.py", "docker-wasm/relink-local.sh"]
+MANIFEST = "docker-wasm/desktop-release-62b6a22-compact2.json"
+RECIPE_SCRIPTS = ["docker-wasm/relink-desktop-release.py", "docker-wasm/relink-local.sh"]
+RECIPE_FILES = [MANIFEST, *RECIPE_SCRIPTS]
+DEFAULT_EXPORT_LIST = "src/emscripten-exports.txt"
 
 
 class ReleaseError(RuntimeError):
@@ -32,8 +34,8 @@ def file_record(path):
     return {"bytes": path.stat().st_size, "sha256": digest.hexdigest()}
 
 
-def load_manifest(repo):
-    manifest = json.loads((repo / MANIFEST).read_text())
+def load_manifest(repo, name=MANIFEST):
+    manifest = json.loads((repo / name).read_text())
     if manifest.get("schema_version") != 1:
         raise ReleaseError("Unsupported release manifest schema")
     return manifest
@@ -50,7 +52,7 @@ def verify_inputs(repo, kit, manifest):
     verify_files(kit, manifest["kit_files"])
     if (kit / "githash.txt").read_text().strip() != manifest["runtime_git_sha"]:
         raise ReleaseError("Kit runtime commit does not match the validated release")
-    exports = (repo / "src/emscripten-exports.txt").read_text().splitlines()
+    exports = (repo / manifest.get("export_list", DEFAULT_EXPORT_LIST)).read_text().splitlines()
     if len(exports) != manifest["export_count"] or len(set(exports)) != len(exports):
         raise ReleaseError("Canonical export count mismatch or duplicate symbols")
     # 🤖 The generic linker searches this directory before the SDK libraries.
@@ -95,16 +97,23 @@ def require_ignored_or_external_output(repo, output):
         raise ReleaseError("Output inside the recipe worktree must be Git-ignored; use build/ or an external directory")
 
 
-def link_command(repo, kit, output):
-    return [
+def link_command(repo, kit, output, manifest=None):
+    manifest = manifest or {}
+    export_list = repo / manifest.get("export_list", DEFAULT_EXPORT_LIST)
+    command = [
         "bash", str(repo / "docker-wasm/relink-local.sh"), str(kit), str(output),
-        "-O3", f"-sEXPORTED_FUNCTIONS=@{repo / 'src/emscripten-exports.txt'}",
-        "--js-library", str(repo / "src/wasm-dlsym.js"),
-        "-sDECLARE_ASM_MODULE_EXPORTS=0",
+        "-O3", f"-sEXPORTED_FUNCTIONS=@{export_list}",
     ]
+    # The slim variant links like CI's slim step: no indexed-dlsym adapter and
+    # no compact export declarations.
+    if manifest.get("compact", True):
+        command += ["--js-library", str(repo / "src/wasm-dlsym.js"), "-sDECLARE_ASM_MODULE_EXPORTS=0"]
+    return command
 
 
 def verify_outputs(output, manifest):
+    if not manifest["outputs"]:
+        raise ReleaseError("Manifest pins no outputs; record the first link's bytes before releasing")
     verify_files(output, manifest["outputs"])
 
 
@@ -117,6 +126,7 @@ def main(argv=None):
     parser.add_argument("kit", type=Path, help="unpacked, unchanged linkkit-62b6a22/linkkit")
     parser.add_argument("output", type=Path, nargs="?", help="new directory for lean.js and lean.wasm")
     parser.add_argument("--check-inputs", action="store_true", help="verify pinned bytes only; no SDK or link")
+    parser.add_argument("--manifest", default=MANIFEST, help="release manifest, relative to the recipe checkout")
     args = parser.parse_args(argv)
     if args.check_inputs and args.output is not None:
         parser.error("--check-inputs does not take an output directory")
@@ -124,7 +134,7 @@ def main(argv=None):
         parser.error("output directory required unless --check-inputs is set")
     repo = Path(__file__).resolve().parents[1]
     kit = args.kit.resolve()
-    manifest = load_manifest(repo)
+    manifest = load_manifest(repo, args.manifest)
     if args.output is not None:
         require_new_output(args.output)
         require_ignored_or_external_output(repo, args.output)
@@ -144,10 +154,10 @@ def main(argv=None):
     version = subprocess.check_output([emcc, "--version"], text=True)
     verify_sdk_version(version)
     output = args.output.absolute()
-    command = link_command(repo, kit, output)
+    command = link_command(repo, kit, output, manifest)
     environment = os.environ.copy()
     environment["NODE_OPTIONS"] = "--max-old-space-size=8192"
-    recipe_files = {name: file_record(repo / name) for name in RECIPE_FILES}
+    recipe_files = {name: file_record(repo / name) for name in [args.manifest, *RECIPE_SCRIPTS]}
     provenance = {
         "schema_version": 1,
         "release": manifest["release"],

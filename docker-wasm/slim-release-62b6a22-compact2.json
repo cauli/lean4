@@ -1,17 +1,15 @@
 {
   "schema_version": 1,
-  "release": "lean4-desktop-compact-62b6a22",
+  "release": "lean4-slim-compact2-62b6a22",
   "runtime_git_sha": "62b6a2291302d4bbeace37642a066b7510d0145c",
   "emscripten_version": "4.0.22",
-  "export_count": 104677,
+  "export_list": "src/emscripten-exports-slim.txt",
+  "compact": false,
+  "export_count": 16928,
   "recipe_inputs": {
-    "src/emscripten-exports.txt": {
-      "bytes": 11322970,
-      "sha256": "1049f282260f3a18e1cf8bfe9b24355a3e515c54a4321d5ab2bd698f1a57a956"
-    },
-    "src/wasm-dlsym.js": {
-      "bytes": 2352,
-      "sha256": "264f000882cad81e4ed3484a0e3c545d7b533ae9ca06e34041b730afeb699da7"
+    "src/emscripten-exports-slim.txt": {
+      "bytes": 698014,
+      "sha256": "f0fe95b7cd389167a106b6d9439a5635ff12aa009b908cf8c64ea475845938a2"
     }
   },
   "kit_files": {
@@ -100,14 +98,5 @@
       "sha256": "4ef06c0a514e486d9b590a69f5e311c6a0a372cea64407aedc8c63033a836d4e"
     }
   },
-  "outputs": {
-    "lean.js": {
-      "bytes": 148402,
-      "sha256": "63aa7b004435f3d90cf19d7c3b3e3284726701ea06da8bc70b015125e1a38b24"
-    },
-    "lean.wasm": {
-      "bytes": 100838905,
-      "sha256": "08d3ae8ee5dec8bae165ad5102e604eca016d74d2303e0b5748690df679a764e"
-    }
-  }
+  "outputs": {}
 }
