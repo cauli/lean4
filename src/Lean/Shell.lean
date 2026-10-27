@@ -62,6 +62,10 @@ its own cached environment, so `import Std …` (or any imports) is slow only on
 its first compile and fast on every repeat, just like Init-only code. -/
 private initialize wasmEnvCache : IO.Ref (Array (Array Name × Environment)) ← IO.mkRef #[]
 
+/-- Contexts `lean_wasm_compile_with_context` has elaborated, oldest first: the
+context's text and the command state at its end. -/
+private initialize wasmContextCache : IO.Ref (Array (String × Elab.Command.State)) ← IO.mkRef #[]
+
 /-- Get or create the cached WASM environment for the given header `imports`.
 The first compile with a given import set imports it (slow); later compiles with
 the same set reuse the cached environment (fast). -/
@@ -183,6 +187,7 @@ Call this if you need to re-import modules (e.g., after changing search paths).
 @[export lean_wasm_reset]
 def wasmReset : IO Unit := do
   wasmEnvCache.set #[]
+  wasmContextCache.set #[]
   IO.println "[WASM] Environment cache cleared"
 
 /--
@@ -219,6 +224,89 @@ def wasmLoadSnapshot (path : String) : IO UInt32 := do
   catch e =>
     IO.eprintln s!"[WASM DEBUG] wasmLoadSnapshot failed: {e}"
     return 1
+
+/-- How many elaborated contexts to keep; a reader moving between a few
+exercises should not pay for any of their contexts twice. -/
+private def wasmContextCacheSize : Nat := 4
+
+/-- Elaborates the commands of `inputCtx` from `parserState` on, starting in
+`cmdState`, with `wasmCompile`'s synchronous loop and message collection. -/
+private def wasmElabCommands (inputCtx : Parser.InputContext) (cmdState : Elab.Command.State)
+    (parserState : Parser.ModuleParserState) (initial : MessageLog := {}) :
+    IO (MessageLog × Elab.Command.State) := do
+  let collect : Elab.Frontend.FrontendM MessageLog := do
+    let mut acc := initial
+    let mut done := false
+    while !done do
+      done := (← Elab.Frontend.processCommand)
+      acc := acc ++ (← Elab.Frontend.getCommandState).messages
+    return acc
+  let (msgs, s) ← StateRefT'.run (ReaderT.run collect { inputCtx })
+    { commandState := cmdState, parserState, cmdPos := parserState.pos }
+  return (msgs, s.commandState)
+
+/-- Prints `msgs` as `wasmCompile` does, one JSON object per line, adding
+`"context": true` to those of a context. -/
+private def wasmPrintMessages (fileMap : FileMap) (msgs : MessageLog) (fromContext : Bool) :
+    IO Unit := do
+  for msg in msgs.toList do
+    let diag := (← Widget.msgToInteractiveDiagnostic fileMap msg false).toDiagnostic
+    let json := Json.mkObj <| [
+      ("fileName", Json.str msg.fileName),
+      ("pos", Json.mkObj [("line", msg.pos.line), ("column", msg.pos.column)]),
+      ("endPos", match msg.endPos with
+        | some p => Json.mkObj [("line", p.line), ("column", p.column)]
+        | none => Json.null),
+      ("severity", match msg.severity with
+        | .error => "error" | .warning => "warning" | .information => "information"),
+      ("caption", msg.caption),
+      ("data", diag.message),
+      ("isSilent", msg.isSilent),
+      ("keepFullRange", msg.keepFullRange),
+      ("kind", Json.str msg.kind.toString)
+    ] ++ (if fromContext then [("context", Json.bool true)] else [])
+    IO.println json.compress
+
+/--
+Compiles `code` as the continuation of `context`, elaborating `context` only
+once across calls.
+
+`context` is a whole file, header and commands, that many compiles share (the
+earlier material an exercise depends on, say); `code` has no header and is
+elaborated starting from the command state at the end of `context`, so it sees
+the context's declarations, open namespaces and options. That state is cached
+by the context's text, and a later call with the same context elaborates only
+`code`.
+
+Messages are printed as by `lean_wasm_compile`. Those of `code` have positions
+in `code`. Those of `context` are printed when it is elaborated, with
+`"context": true`. Returns 0 when `code` has no errors, 1 otherwise.
+-/
+@[export lean_wasm_compile_with_context]
+def wasmCompileWithContext (context code : String) (fileName : String := "<input>") :
+    IO UInt32 := do
+  let ctxState ← match (← wasmContextCache.get).find? (·.1 == context) with
+    | some (_, s) => pure s
+    | none =>
+      let inputCtx := Parser.mkInputContext context fileName
+      let (header, parserState, headerMessages) ← Parser.parseHeader inputCtx
+      let env ← getOrCreateWasmEnvFor (Elab.headerToImports header)
+      let (msgs, s) ← wasmElabCommands inputCtx (Elab.Command.mkState env {} {}) parserState
+        headerMessages
+      wasmPrintMessages inputCtx.fileMap msgs (fromContext := true)
+      -- Keep only what `code` builds on; messages, info trees and pending
+      -- tasks belong to the context's own run.
+      let s := { s with
+        messages := {}, infoState := {}, traceState := {}, snapshotTasks := #[]
+        prevLinterStates := none, codeQualityEntryTasks := #[] }
+      wasmContextCache.modify fun cache =>
+        let cache := cache.push (context, s)
+        cache.extract (cache.size - min cache.size wasmContextCacheSize) cache.size
+      pure s
+  let inputCtx := Parser.mkInputContext code fileName
+  let (msgs, _) ← wasmElabCommands inputCtx ctxState {}
+  wasmPrintMessages inputCtx.fileMap msgs (fromContext := false)
+  return if msgs.toList.any (·.severity == .error) then 1 else 0
 
 /-- Whether Lean was built with an address sanitizer enabled. -/
 @[extern "lean_internal_has_address_sanitizer"]
