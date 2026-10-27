@@ -259,6 +259,7 @@ jobs:
           cp build/stage0/leanc.sh linkkit/leanc.sh.txt || true
           # The export lists the link generated from these libraries.
           find build -name 'emscripten-exports*.txt' -path '*stage1*' -exec cp {} linkkit/ \;
+          cp src/wasm-dlsym.js linkkit/
           git rev-parse HEAD > linkkit/githash.txt
           ls -la linkkit/
           tar cf - linkkit | zstd -T0 --no-progress -o linkkit.tar.zst

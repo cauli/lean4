@@ -216,6 +216,16 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
     set(EMSCRIPTEN_SETTINGS "-fwasm-exceptions -pthread")
     set(EMSCRIPTEN_LINK_SETTINGS "-sALLOW_MEMORY_GROWTH=1 -sINCOMING_MODULE_JS_API=print,printErr,setStatus,locateFile,mainScriptUrlOrBlob,INITIAL_MEMORY,wasmMemory,noInitialRun,preRun,onRuntimeInitialized,onAbort,onExit,arguments,ENV")
 
+  # Assign the wasm exports to JS in a loop instead of declaring each one: with
+  # ~100k exports the declarations alone made lean.js ~50MB. The adapter in
+  # wasm-dlsym.js (linked below) is what keeps `dlsym` fast in this mode;
+  # Emscripten's own builds the export-name list on every lookup, which made
+  # importing Init ~25x slower.
+  option(EMSCRIPTEN_COMPACT_EXPORTS "Assign WASM exports through a JS loop" ON)
+  if(EMSCRIPTEN_COMPACT_EXPORTS)
+    string(APPEND EMSCRIPTEN_LINK_SETTINGS " -sDECLARE_ASM_MODULE_EXPORTS=0")
+  endif()
+
   # EMSCRIPTEN_DEBUG: Enable readable function names and assertions for debugging
   # This makes the WASM larger and slower but shows actual function names in stack traces
   # instead of mangled names like "invoke_III"
@@ -992,6 +1002,10 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
     APPEND LEAN_EXE_LINKER_FLAGS
     " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} ${EMSCRIPTEN_LINK_SETTINGS} -lnodefs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=2 -s ERROR_ON_UNDEFINED_SYMBOLS=0 -sEXPORTED_FUNCTIONS=@${CMAKE_BINARY_DIR}/emscripten-exports.txt -sEXPORTED_RUNTIME_METHODS=ccall,callMain,FS,ENV,getValue,setValue,stringToNewUTF8,UTF8ToString -s STACK_SIZE=16777216 -sINITIAL_MEMORY=67108864 -sMAXIMUM_MEMORY=4294967296 -sPTHREAD_POOL_SIZE=4"
   )
+  if(EMSCRIPTEN_COMPACT_EXPORTS)
+    # Needs MAIN_MODULE's dynamic linker, so only the `lean` executable gets it.
+    string(APPEND LEAN_EXE_LINKER_FLAGS " --js-library \"${LEAN_SOURCE_DIR}/wasm-dlsym.js\"")
+  endif()
 endif()
 
 # Build the compiler using the bootstrapped C sources for stage0, and use
