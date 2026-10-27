@@ -988,6 +988,12 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
   # interpreted instead of native. This replaces MAIN_MODULE=1 +
   # LINKABLE=1 + EXPORT_ALL=1, whose ~230k-entry export table dominated the
   # glue JS and blocked all DCE (WebKit on iPhone dies compiling the result).
+  # EXIT_RUNTIME=1 lets a one-shot `lean` run tear down when main() returns, but
+  # it also exits the runtime, closing stdin/stdout/stderr, after any event-loop
+  # callback finds nothing keeping it alive. A host that never runs main() and
+  # calls lean_wasm_compile repeatedly would lose stderr the first time a Lean
+  # thread proxies work to the main thread, so the export list includes
+  # emscripten_runtime_keepalive_push for those hosts to call once after boot.
   # PTHREAD_POOL_SIZE pre-spawns worker threads so Lean can create threads without
   # the main thread blocking (Emscripten can't spawn a worker synchronously); 4
   # matched the working 4.28 build. STACK_SIZE=16MB covers whatever import work

@@ -11,6 +11,8 @@ export table:
 * `main`, `malloc`, `free`, and every `lean_*` function: the C runtime API, the
   `@[export lean_*]` Lean functions, and the entry points the browser workers
   call (`lean_wasm_compile`, ...).
+* `emscripten_runtime_keepalive_push`, which a host that never runs `main()`
+  calls once after boot (see the EXIT_RUNTIME note in src/CMakeLists.txt).
 * every module initializer, `initialize_<M>`, and its phase variants
   `runtime_initialize_<M>` and `meta_initialize_<M>`: `runModInitCore`
   resolves these by name, and falls back to replaying a module's `[init]`
@@ -64,7 +66,9 @@ INIT_PREFIXES = ("initialize_", "runtime_initialize_", "meta_initialize_")
 
 
 def export_lists(syms):
-    base, boxed, slim_boxed = {"main", "malloc", "free"}, set(), set()
+    # Emscripten's libc defines these, so they are not in Lean's archives.
+    base = {"main", "malloc", "free", "emscripten_runtime_keepalive_push"}
+    boxed, slim_boxed = set(), set()
     for name, kind in syms.items():
         if kind == "func" and name.startswith("lean_"):
             base.add(name)
