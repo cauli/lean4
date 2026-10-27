@@ -11,6 +11,7 @@ meta import Lean.Parser.Module
 import Lean.Compiler.ModPkgExt
 public import Lean.DeprecatedModule
 import Init.Data.String.Modify
+import Init.System.Platform
 
 public section
 
@@ -147,13 +148,16 @@ def processHeaderCore
     (headerStx? : Option HeaderSyntax := none)
     (origHeaderStx? : Option HeaderSyntax := none)
     : IO (Environment × MessageLog) := do
-  let level := if isModule then
-    if Elab.inServer.get opts then
-      .server
-    else
-      .exported
+  -- Determine import level based on context
+  -- Emscripten/WASM builds only have .exported level files, so always use that
+  let level : OLeanLevel := if System.Platform.isEmscripten then
+    .exported
+  else if isModule then
+    if Elab.inServer.get opts then .server else .exported
   else
     .private
+  if System.Platform.isEmscripten then
+    IO.println s!"[DEBUG:IMPORT] Emscripten detected, using level = {repr level}"
   let (env, messages) ← try
     let env ←
       importModules (leakEnv := leakEnv) (loadExts := true) (level := level)

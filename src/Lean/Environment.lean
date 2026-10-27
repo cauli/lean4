@@ -22,6 +22,7 @@ public import Lean.PrivateName
 public import Lean.LoadDynlib
 public import Lean.CompactedRegion
 public import Init.Dynamic
+import Init.System.Platform
 import Init.Data.Slice
 import Init.Data.String.TakeDrop
 import Init.Data.Range.Polymorphic.Iterators
@@ -2021,15 +2022,23 @@ private def ImportedModule.publicModule? (self : ImportedModule) : Option Module
     -- (should not have any constants)
     self.irParts.back?.map (·.1)
 
-private def ImportedModule.getData? (self : ImportedModule) (level : OLeanLevel) : Option ModuleData := do
+private def ImportedModule.getData? (self : ImportedModule) (level : OLeanLevel) : Option ModuleData :=
   -- Without the module system, we only have the exported level.
-  let level := if (← self.publicModule?).isModule then level else .exported
+  -- Use .exported as fallback if publicModule? is unavailable (e.g., WASM with partial files)
+  let level := match self.publicModule? with
+    | some mod => if mod.isModule then level else .exported
+    | none => .exported
   self.parts[level.ctorIdx]?.map (·.1)
 
 /-- The main module data that will eventually be used to construct the kernel environment. -/
 private def ImportedModule.mainModule? (self : ImportedModule) : Option ModuleData :=
   if self.hasData then
-    self.getData? (if self.importAll then .private else .exported)
+    let level := if self.importAll then OLeanLevel.private else .exported
+    -- Fall back to lower levels if the requested level doesn't exist.
+    -- This handles builds that only include base .olean files (e.g., WASM/Emscripten).
+    -- Also try directly accessing parts[0] as last resort for partial builds.
+    self.getData? level <|> self.getData? .server <|> self.getData? .exported
+      <|> self.parts[0]?.map (·.1)
   else
     self.irParts.back?.map (·.1)
 
@@ -2086,8 +2095,14 @@ private def readModuleDataPartsOfMod (mod : Name) : IO (Array (ModuleData × Com
   -- Opportunistically load all available parts.
   -- Necessary because the import level may be upgraded a later import.
   let sFile := OLeanLevel.server.adjustFileName mFile
+  -- Parts may be missing in stripped installs (e.g. WASM builds that ship only
+  -- base .olean files); load what exists.
+  unless (← sFile.pathExists) do
+    return #[main]
   let server ← unsafe CompactedRegion.read (α := ModuleData) sFile #[main.2]
   let pFile := OLeanLevel.private.adjustFileName mFile
+  unless (← pFile.pathExists) do
+    return #[main, server]
   let priv ← unsafe CompactedRegion.read (α := ModuleData) pFile #[main.2, server.2]
   return #[main, server, priv]
 
@@ -2178,7 +2193,11 @@ where
   go (imports : Array Import) (importAll isExported needsData needsIRTrans : Bool) := do
     for i in imports do
       -- `B > none`?
-      let needsData := needsData && (i.isExported || importAll)
+      -- In Emscripten, we ALWAYS need .olean data (no IR fallback), so keep needsData=true
+      let needsData := if System.Platform.isEmscripten then
+        needsData
+      else
+        needsData && (i.isExported || importAll)
       -- `B ≥ privateAll`?
       let importAll := globalLevel == .private || importAll && i.importAll
       -- `B ≥ public`?
@@ -2188,7 +2207,14 @@ where
       let needsIRTrans := needsIRTrans || (!loadIRSig && needsData && i.isMeta)
       -- `loadIRSig` only loads `.ir.sig` for modules whose `.olean` is also loaded
       -- (i.e., `needsData`), preserving the invariant that IR is never present without its olean.
-      let needsIR := needsIRTrans || importAll || globalLevel > .exported || (loadIRSig && needsData)
+      -- On Emscripten, load `.ir` wherever data is loaded: codegen phase-splits
+      -- IR, so the `.olean`'s decl map holds `.extern` stubs whose runtime
+      -- bodies live in the `.ir` part. Core stubs resolve through `dlsym` into
+      -- the linked binary, but external packages (Batteries, …) exist only as
+      -- olean trees — without their `.ir` the interpreter cannot run so much as
+      -- their `initialize` blocks. The parts are small (~17% of the oleans).
+      let needsIR := needsIRTrans || importAll || globalLevel > .exported ||
+        (loadIRSig && needsData) || (System.Platform.isEmscripten && needsData)
       if !needsData && !needsIR then
         continue
 
@@ -2311,7 +2337,13 @@ def finalizeImport (s : ImportState) (imports : Array Import) (opts : Options) (
     (loadIRSig := false) :
     IO Environment := do
   let modules := s.moduleNames.filterMap (s.moduleNameMap[·]?)
-  let moduleData ← modules.mapM fun mod => do
+  if System.Platform.isEmscripten then
+    IO.println s!"[DEBUG:PROGRESS] Loading {modules.size} modules..."
+  let moduleData ← modules.mapIdxM fun idx mod => do
+    -- Progress counter for Emscripten (every 50 modules or on error)
+    let i : Nat := idx
+    if System.Platform.isEmscripten && (i % 50 == 0 || i + 1 == modules.size) then
+      IO.println s!"[DEBUG:PROGRESS] {i + 1}/{modules.size}: {mod.module}"
     let some data := mod.mainModule? |
       throw <| IO.userError s!"missing data file for module {mod.module}"
     return data

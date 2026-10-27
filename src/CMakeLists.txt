@@ -113,6 +113,15 @@ option(FORCE_GMP "Build against the available GMP even if older than the require
 option(USE_MIMALLOC "use mimalloc" ON)
 set(LEAN_MI_SECURE 0 CACHE STRING "Configure mimalloc memory safety mitigations (https://github.com/microsoft/mimalloc/blob/v2.2.7/include/mimalloc/types.h#L56-L60)")
 
+# mimalloc's OS layer can't grow memory under Emscripten: mi_malloc_small
+# returns null once its initial reserve is exhausted (even a 24-byte request
+# fails with GBs of wasm heap free), aborting olean import via
+# lean_internal_panic_out_of_memory. Fall back to Emscripten's own allocator,
+# which grows the wasm memory correctly (ALLOW_MEMORY_GROWTH).
+if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
+  set(USE_MIMALLOC OFF)
+endif()
+
 # development-specific options
 option(CHECK_OLEAN_VERSION "Only load .olean files compiled with the current version of Lean" OFF)
 option(USE_LAKE "Use Lake instead of lean.mk for building core libs from language server" ON)
@@ -164,18 +173,68 @@ if(CHECK_OLEAN_VERSION MATCHES "ON")
 endif()
 
 if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
+  # Build with Emscripten pthreads. The single-threaded WASM build OOMs during the
+  # `Init` olean import (upstream's async-const realization accumulates unboundedly
+  # with no worker threads to drain it); the pthread build — like the native and the
+  # older 4.28 WASM builds — drains that work on real worker threads. Requires
+  # cross-origin isolation (COOP/COEP) in the browser for SharedArrayBuffer.
+  #
   # TODO(WN): code size/performance tradeoffs
   # - we're using -O3; it's /okay/
   # - -Oz produces quite slow code
   # - system libraries such as OpenGL are included in the JS but shouldn't be
-  # - we need EMSCRIPTEN_KEEPALIVE annotations on exports to run meta-dce (-s MAIN_MODULE=2)
+  # - we disable "-flto" because it uses too much memory (we would need more RAM in the CI runner)
 
   # From https://emscripten.org/docs/compiling/WebAssembly.html#backends:
   # > The simple and safe thing is to pass all -s flags at both compile and link time.
-  set(EMSCRIPTEN_SETTINGS "-s ALLOW_MEMORY_GROWTH=1 -fwasm-exceptions -pthread -flto")
-  string(APPEND LEANC_EXTRA_CC_FLAGS " -pthread")
+  # -fwasm-exceptions uses native WASM exception handling instead of the
+  # JS-emulated kind (-sDISABLE_EXCEPTION_CATCHING=0), which routes every
+  # potentially-throwing call through a JS invoke_* trampoline. Lean's
+  # runtime is exception-heavy, so the emulated mode dominated profiles of
+  # olean import loading in the browser.
+  # No -flto: it OOMs the CI runner during the LTO link, so -mtail-call stands in
+  # as the codegen optimization. MAXIMUM_MEMORY=4GB (up from the 2GB default) tests
+  # whether the Init-import allocation is bounded-but-large or truly unbounded;
+  # shared-memory growth doesn't engage here, so the worker reserves it up front.
+  # INCOMING_MODULE_JS_API: emsdk 6 strictly validates Module keys supplied by
+    # the embedder; the playground workers set all of these before load.
+    # Threads: 4.33's import machinery creates IO.Promises during env
+    # realization, and without LEAN_MULTI_THREAD the task manager is a no-op,
+    # so Promise.new panics by design. A single-thread (no COOP/COEP, phone-
+    # sized) build needs a sequential task manager upstream first.
+    # Native wasm EH. With the JS-emulated model every potentially-throwing
+    # call runs through a JS invoke_* trampoline, so deep kernel recursion
+    # (a `decide` over a large computation) consumes JavaScript stack, which a
+    # browser worker cannot enlarge, and dies with RangeError while the 16MB
+    # wasm stack is nearly empty. The trap that once looked like a wasm-EH
+    # miscompile (`unreachable` inside readModuleDataPartsOfMod on first
+    # compile) was the extern world-token arity mismatch fixed in b6b649fe641.
+    # EMSCRIPTEN_SETTINGS holds only flags that change CODEGEN and therefore
+    # must reach every compile: -pthread (atomics/TLS) and the EH mode. Flags
+    # that only shape the final JS/wasm output live in EMSCRIPTEN_LINK_SETTINGS
+    # so that link-only experiments keep the ccache'd objects valid.
+    set(EMSCRIPTEN_SETTINGS "-fwasm-exceptions -pthread")
+    set(EMSCRIPTEN_LINK_SETTINGS "-sALLOW_MEMORY_GROWTH=1 -sINCOMING_MODULE_JS_API=print,printErr,setStatus,locateFile,mainScriptUrlOrBlob,INITIAL_MEMORY,wasmMemory,noInitialRun,preRun,onRuntimeInitialized,onAbort,onExit,arguments,ENV")
+
+  # EMSCRIPTEN_DEBUG: Enable readable function names and assertions for debugging
+  # This makes the WASM larger and slower but shows actual function names in stack traces
+  # instead of mangled names like "invoke_III"
+  option(EMSCRIPTEN_DEBUG "Enable debug-friendly WASM build with readable function names" OFF)
+  if(EMSCRIPTEN_DEBUG)
+    message(STATUS "Emscripten debug mode: enabling readable function names and assertions")
+    # --profiling-funcs keeps a name section (accurate, non-folded stack traces)
+    # without the size blow-up of -g3; -sASSERTIONS=1 surfaces real abort/OOM
+    # messages instead of a bare `unreachable`.
+    # ASSERTIONS=1 is broken on emsdk 6 pthread workers: the stack-cookie
+    # checks call growMemViews() before the load message delivers wasmMemory
+    # ("Cannot read properties of undefined (reading 'buffer')" at boot).
+    # Keep the name section for symbolizing traces.
+    string(APPEND EMSCRIPTEN_SETTINGS " --profiling-funcs")
+  endif()
+
+  string(APPEND LEANC_EXTRA_CC_FLAGS " -D LEAN_EMSCRIPTEN ${EMSCRIPTEN_SETTINGS}")
   string(APPEND LEAN_EXTRA_CXX_FLAGS " -D LEAN_EMSCRIPTEN ${EMSCRIPTEN_SETTINGS}")
-  string(APPEND LEAN_EXTRA_LINKER_FLAGS " ${EMSCRIPTEN_SETTINGS}")
+  string(APPEND LEAN_EXTRA_LINKER_FLAGS " ${EMSCRIPTEN_SETTINGS} ${EMSCRIPTEN_LINK_SETTINGS}")
 endif()
 
 # Added for CTest
@@ -908,9 +967,30 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
   # We set `ERROR_ON_UNDEFINED_SYMBOLS=0` because our build of LibUV does not
   # define all symbols, see the comment about LibUV on WebAssembly further up
   # in this file.
+  # MAIN_MODULE=2 keeps dlsym() working (the IR interpreter resolves native
+  # code — mandatorily for body-less @[extern] decls like the IO primitives —
+  # via dlsym(RTLD_DEFAULT), which searches the wasm export table) while
+  # letting wasm-ld GC everything not reachable from the export list.
+  # emscripten-exports.txt pins the symbols dlsym must see; it is generated from
+  # the libraries just before the link (script/gen-emscripten-exports.py says
+  # what it holds and why), so it always matches this build. All other Lean
+  # functions stay callable through their IR (shipped as .ir parts), just
+  # interpreted instead of native. This replaces MAIN_MODULE=1 +
+  # LINKABLE=1 + EXPORT_ALL=1, whose ~230k-entry export table dominated the
+  # glue JS and blocked all DCE (WebKit on iPhone dies compiling the result).
+  # PTHREAD_POOL_SIZE pre-spawns worker threads so Lean can create threads without
+  # the main thread blocking (Emscripten can't spawn a worker synchronously); 4
+  # matched the working 4.28 build. STACK_SIZE=16MB covers whatever import work
+  # still runs on the main wasm stack (Emscripten's 64KB default overflows it).
+  # INITIAL_MEMORY must exceed static data + the 16MB stack + per-thread TLS; the
+  # pthread layout needs ~22MB up front (the default 16MB fails to link). Shared
+  # memory does NOT grow here (the browser's SharedArrayBuffer isn't resizable in
+  # this config), so the worker reserves the real size up front; MAXIMUM_MEMORY=4GB
+  # raises the wasm32 ceiling from 2GB so we can test whether the import fits.
+  set(LEAN_EXE_PRELINK "python3 ${LEAN_SOURCE_DIR}/../script/gen-emscripten-exports.py --nm ${CMAKE_NM} --full ${CMAKE_BINARY_DIR}/emscripten-exports.txt --slim ${CMAKE_BINARY_DIR}/emscripten-exports-slim.txt ${LIB}/temp/libleanmain.a ${LIB}/temp/libleanshell.a ${LIB}/lean/libleancpp.a ${LIB}/lean/libInit.a ${LIB}/lean/libStd.a ${LIB}/lean/libLean.a ${LIB}/lean/libleanrt.a")
   string(
     APPEND LEAN_EXE_LINKER_FLAGS
-    " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} -lnodefs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=1 -s LINKABLE=1 -s EXPORT_ALL=1 -s ERROR_ON_UNDEFINED_SYMBOLS=0"
+    " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} ${EMSCRIPTEN_LINK_SETTINGS} -lnodefs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=2 -s ERROR_ON_UNDEFINED_SYMBOLS=0 -sEXPORTED_FUNCTIONS=@${CMAKE_BINARY_DIR}/emscripten-exports.txt -sEXPORTED_RUNTIME_METHODS=ccall,callMain,FS,ENV,getValue,setValue,stringToNewUTF8,UTF8ToString -s STACK_SIZE=16777216 -sINITIAL_MEMORY=67108864 -sMAXIMUM_MEMORY=4294967296 -sPTHREAD_POOL_SIZE=4"
   )
 endif()
 
@@ -1140,8 +1220,15 @@ endif()
 
 # use Bash version for building, use Lean version in bin/ for tests & distribution
 configure_file("${LEAN_SOURCE_DIR}/bin/leanc.in" "${CMAKE_BINARY_DIR}/leanc.sh" @ONLY)
-if(STAGE GREATER 0 AND NOT CMAKE_SYSTEM_NAME MATCHES "Emscripten")
+
+# Copy Leanc.lean source so Lake can build the Leanc library (needed for all
+# platforms, including Emscripten where the stdlib build expects it)
+if(STAGE GREATER 0 AND EXISTS ${LEAN_SOURCE_DIR}/Leanc.lean)
   configure_file("${LEAN_SOURCE_DIR}/Leanc.lean" "${CMAKE_BINARY_DIR}/leanc/Leanc.lean" @ONLY)
+endif()
+
+# Build the leanc binary (not needed for Emscripten because it uses emcc directly)
+if(STAGE GREATER 0 AND NOT CMAKE_SYSTEM_NAME MATCHES "Emscripten")
   add_custom_target(
     leanc
     ALL
@@ -1277,7 +1364,14 @@ string(REPLACE "ROOT" "${CMAKE_BINARY_DIR}" LEANC_CC "${LEANC_CC}")
 string(REPLACE "ROOT" "${CMAKE_BINARY_DIR}" LEANC_INTERNAL_FLAGS "${LEANC_INTERNAL_FLAGS}")
 
 toml_escape("${LEAN_EXTRA_OPTS}" LEAN_EXTRA_OPTS_TOML)
-toml_escape("${LEANC_EXTRA_CC_FLAGS}" LEAN_MORE_LEANC_ARGS_TOML)
+# For Emscripten cross-compilation, Lake needs the Emscripten settings as well:
+# it gets its default leanc flags from the previous stage's lean binary, which
+# for the wasm build is a native 32-bit one.
+set(LAKE_MORE_LEANC_FLAGS "${LEANC_EXTRA_CC_FLAGS}")
+if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
+  string(APPEND LAKE_MORE_LEANC_FLAGS " ${EMSCRIPTEN_SETTINGS}")
+endif()
+toml_escape("${LAKE_MORE_LEANC_FLAGS}" LEAN_MORE_LEANC_ARGS_TOML)
 # These are passed as untraced arguments because they include the sysroot path.
 # However, as they are untraced, Lake will not invalidate build artifacts if the sysroot changes.
 # As such, care must be taken when changing sysroots. Locally, artifacts can be manually cleaned via

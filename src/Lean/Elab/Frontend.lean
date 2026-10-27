@@ -266,6 +266,22 @@ private def setMainModule (snap : Language.Lean.InitialSnapshot) (m : Name) :
     result? := some { parsed with
       processedSnap := .finished none newProcessed } }
 
+/--
+Loads a `--incr-header-save` snapshot and returns its post-import command state
+together with the `[init]` module indices `runInitAttrsForModules` must replay.
+For hosts that consume the header environment directly instead of driving the
+language processor — the WASM shell seeds its per-import-set environment cache
+this way, skipping the multi-minute `loadExts` import.
+-/
+unsafe def loadHeaderSnapshotCmdState (fname : System.FilePath) :
+    IO (Command.State × Array Nat) := do
+  let incr ← loadIncrSnapshot fname
+  let some parsed := incr.snap.result?
+    | throw <| IO.userError s!"snapshot {fname} has no parse result"
+  let some hps := parsed.processedSnap.get.result?
+    | throw <| IO.userError s!"snapshot {fname} has no processed header"
+  return (hps.cmdState, incr.initModIdxs)
+
 def runFrontend
     (input : String)
     (opts : Options)
@@ -283,6 +299,8 @@ def runFrontend
     (incrLoadFileName? : Option System.FilePath := none)
     (incrHeaderSaveFileName? : Option System.FilePath := none)
     : IO (Option Environment) := do
+  IO.println "[DEBUG:L] runFrontend entered"
+  IO.println s!"[DEBUG:L] fileName = {fileName}, mainModuleName = {mainModuleName}"
   let startTime := (← IO.monoNanosNow).toFloat / 1000000000
   let inputCtx := Parser.mkInputContext input fileName
   -- default `cmdlineSnapshots` to true (not done as default value for API back-compat reasons)
@@ -337,11 +355,14 @@ def runFrontend
   let snaps := Language.toSnapshotTree snap
   let severityOverrides := errorOnKinds.foldl (·.insert · .error) {}
 
+  IO.println "[DEBUG:N] About to run and report snapshots"
   -- reporting should be done before any early exit from the function
   let hasErrors ← snaps.runAndReport opts jsonOutput severityOverrides
+  IO.println s!"[DEBUG:N] Reporting complete, hasErrors = {hasErrors}"
 
   let some cmdState := Language.Lean.waitForFinalCmdState? snap
-    | return none
+    | IO.println "[DEBUG:N] waitForFinalCmdState? returned none"
+      return none
 
   let mut env := cmdState.env
   let finalOpts := cmdState.scopes[0]!.opts
@@ -352,13 +373,23 @@ def runFrontend
   -- Saves `snapToSave` wrapped with the init-mod indices used by `runInitAttrsForModules` on load.
   -- Writes a `<incrFile>.deps` JSON helper alongside: the dep regions grouped per module (see
   -- `regionsToModuleArtifacts`), needed to map the snapshot back in before we can access `env`.
+  --
+  -- On Emscripten the snapshot is saved SELF-CONTAINED (no dep regions, empty `.deps`): dep
+  -- resolution matches pointers against each region's saved `base_addr` range, which requires
+  -- every dep to sit at its saved address on load (mmap-at-base) and all saved ranges to be
+  -- disjoint. Wasm can never map at base, and the 32-bit address space makes the independently
+  -- built oleans' saved ranges collide, so the region-referencing scheme cannot work there;
+  -- copying everything reachable into the snapshot sidesteps addresses entirely at the cost of
+  -- a larger file.
   let saveSnap (incrFile : System.FilePath) (snapToSave : Language.Lean.InitialSnapshot) :
       IO Unit := do
     let toSave : IncrSnapshot :=
       { snap := snapToSave, initModIdxs := getRegularInitAttrModIdxs env }
+    let depRegions := if System.Platform.isEmscripten then #[] else env.header.regions
     let compactor ← (unsafe CompactedRegion.save incrFile `_snap toSave
-      env.header.regions none (allowClosures := true))
-    let moduleArts := regionsToModuleArtifacts env.header.regions
+      depRegions none (allowClosures := true))
+    let moduleArts := if System.Platform.isEmscripten then #[] else
+      regionsToModuleArtifacts env.header.regions
     IO.FS.writeFile (incrFile.addExtension "deps") (toJson moduleArts).compress
     Runtime.forget compactor
 

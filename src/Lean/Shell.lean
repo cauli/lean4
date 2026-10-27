@@ -14,6 +14,7 @@ import Lean.Compiler.LCNF.EmitC
 import Init.System.Platform
 import Lean.Compiler.Options
 import Std.Async.Process
+import Lean.Compiler.InitAttr  -- for `runInitAttrsForModules` on snapshot load
 
 /-  Lean companion to  `shell.cpp` -/
 
@@ -49,6 +50,175 @@ Before calling this function, the LLVM subsystem must first be successfully init
 -/
 @[extern "lean_emit_llvm"]
 opaque emitLLVM (env : Environment) (modName : Name) (filepath : FilePath) : IO Unit
+
+/-! ## WASM API
+
+These functions provide a WASM-friendly API that caches the environment
+between calls, avoiding the slow re-import of Init modules on each compile.
+-/
+
+/-- Cache of import-set → environment. Each distinct set of header imports gets
+its own cached environment, so `import Std …` (or any imports) is slow only on
+its first compile and fast on every repeat, just like Init-only code. -/
+private initialize wasmEnvCache : IO.Ref (Array (Array Name × Environment)) ← IO.mkRef #[]
+
+/-- Get or create the cached WASM environment for the given header `imports`.
+The first compile with a given import set imports it (slow); later compiles with
+the same set reuse the cached environment (fast). -/
+def getOrCreateWasmEnvFor (imports : Array Import) : IO Environment := do
+  let key := imports.map (·.module)
+  for (k, env) in (← wasmEnvCache.get) do
+    if k == key then
+      IO.eprintln "[WASM DEBUG] getOrCreateWasmEnvFor: returning cached env"
+      return env
+  IO.eprintln s!"[WASM DEBUG] getOrCreateWasmEnvFor: cache miss, importing {key}…"
+  -- Mirror the frontend's header import (`processHeaderCore`, Elab/Import.lean):
+  --  * `loadExts := true` loads the environment extensions — parser notation
+  --    (e.g. `+`) and the instance database (e.g. `OfNat`). Without it (the
+  --    default `false`), `#check 2 + 2` fails with "OfNat" / "unexpected '+'".
+  --  * `level := .exported` matches the only data the WASM build ships (base
+  --    `.olean`); the default `.private` expects absent private/server data.
+  --  * `leakEnv := true` keeps the compacted regions alive. Environments are
+  --    cached and reused across compiles; with the default (regions freed after
+  --    import) a later compile dereferences freed regions and fails. Freeing is
+  --    also unsafe once extensions are loaded (see `withImportModules`).
+  -- `withImporting` (inside `importModules`) clears the initializer-execution
+  -- flag when it returns, and a `loadExts := true` import refuses to run
+  -- without it — so every cache-miss import after the first would throw.
+  -- Re-enable it each time, as `runFrontend` does after `--incr-load`.
+  unsafe enableInitializersExecution
+  let env ← importModules imports {} 0
+    (level := .exported) (loadExts := true) (leakEnv := true)
+  IO.eprintln "[WASM DEBUG] getOrCreateWasmEnvFor: importModules completed"
+  wasmEnvCache.modify (·.push (key, env))
+  return env
+
+/--
+Compile Lean code using a cached environment.
+
+This is the main WASM entry point. The first call will import Init modules (slow),
+but subsequent calls reuse the cached environment (fast).
+
+The `fileName` parameter is optional - it's only used as a label in error messages,
+not for actual file I/O. The `code` string is processed directly in memory.
+
+Returns 0 on success, 1 on error. Output is written to stdout as JSON.
+-/
+@[export lean_wasm_compile]
+def wasmCompile (code : String) (fileName : String := "<input>") : IO UInt32 := do
+  IO.eprintln s!"[WASM DEBUG] wasmCompile called with code length={code.length}, fileName={fileName}"
+  IO.eprintln "[WASM DEBUG] Creating input context..."
+  let inputCtx := Parser.mkInputContext code fileName
+  -- Parse the file's header (its `import` lines) and import that closure into a
+  -- per-import-set cached environment, then elaborate the body against it. This
+  -- is what lets user code `import Std …` (or any modules) work and stay fast on
+  -- repeat. `headerToImports` includes `Init` implicitly unless the file is
+  -- `prelude`, matching the normal frontend.
+  let (header, parserState, headerMessages) ← Parser.parseHeader inputCtx
+  IO.eprintln "[WASM DEBUG] Getting or creating environment for header imports..."
+  let env ← getOrCreateWasmEnvFor (Elab.headerToImports header)
+  IO.eprintln "[WASM DEBUG] Environment ready"
+
+  let opts : Options := {}
+  let cmdState := Elab.Command.mkState env headerMessages opts
+
+  -- Elaborate synchronously with `Frontend.processCommands` — a plain loop over
+  -- `Command.elabCommandTopLevel` — rather than `Elab.IO.processCommands`. The
+  -- latter drives elaboration through the language-server snapshot/task
+  -- infrastructure, which spawns elaboration tasks. In the single-threaded WASM
+  -- worker those tasks are never drained, leaving the runtime in a state where
+  -- the *next* `lean_wasm_compile` call fails immediately. The synchronous loop
+  -- creates no tasks, so the cached environment stays reusable across compiles.
+  let frontendCtx : Elab.Frontend.Context := { inputCtx }
+  -- Start parsing commands right after the header, so the header's `import` lines
+  -- are not re-parsed as commands (they aren't commands and would error).
+  let frontendState : Elab.Frontend.State :=
+    { commandState := cmdState, parserState := parserState, cmdPos := parserState.pos }
+  -- `Command.elabCommandTopLevel` resets `commandState.messages` at the start of
+  -- every command, so the final state holds only the last command's messages.
+  -- Collect the log after each command instead of reading the end state; seed it
+  -- with any header (import) parse errors.
+  let collect : Elab.Frontend.FrontendM MessageLog := do
+    let mut acc : MessageLog := headerMessages
+    let mut done := false
+    while !done do
+      done := (← Elab.Frontend.processCommand)
+      acc := acc ++ (← Elab.Frontend.getCommandState).messages
+    return acc
+  let (msgLog, _s) ← StateRefT'.run (ReaderT.run collect frontendCtx) frontendState
+
+  -- Output messages as JSON
+  let messages := msgLog.toList
+  IO.eprintln s!"[WASM DEBUG] Processing {messages.length} messages..."
+  for msg in messages do
+    -- Convert to interactive diagnostic, then to plain diagnostic for JSON
+    let interactiveDiag ← Widget.msgToInteractiveDiagnostic inputCtx.fileMap msg false
+    let diag := interactiveDiag.toDiagnostic
+    -- Add extra fields for WASM consumers
+    let json := Json.mkObj [
+      ("fileName", Json.str msg.fileName),
+      ("pos", Json.mkObj [("line", msg.pos.line), ("column", msg.pos.column)]),
+      ("endPos", match msg.endPos with
+        | some p => Json.mkObj [("line", p.line), ("column", p.column)]
+        | none => Json.null),
+      ("severity", match msg.severity with
+        | .error => "error" | .warning => "warning" | .information => "information"),
+      ("caption", msg.caption),
+      ("data", diag.message),
+      ("isSilent", msg.isSilent),
+      ("keepFullRange", msg.keepFullRange),
+      ("kind", Json.str msg.kind.toString)
+    ]
+    IO.println json.compress
+
+  -- Return success/failure
+  let hasErrors := messages.any (·.severity == .error)
+  IO.eprintln s!"[WASM DEBUG] Done, hasErrors={hasErrors}"
+  return if hasErrors then 1 else 0
+
+/--
+Reset the WASM environment cache.
+Call this if you need to re-import modules (e.g., after changing search paths).
+-/
+@[export lean_wasm_reset]
+def wasmReset : IO Unit := do
+  wasmEnvCache.set #[]
+  IO.println "[WASM] Environment cache cleared"
+
+/--
+Seed the WASM environment cache from a `--incr-header-save` snapshot file,
+so the first compile with that header import set skips the multi-minute
+`loadExts` import entirely.
+
+The snapshot must have been saved by this same binary: its closure relocation
+(the base-0 "wasm-main" pseudo-library) is the identity, which is only correct
+against this build's function table. The cache key is read back out of the
+loaded environment's header, so the file needs no naming convention.
+
+Returns 0 on success, 1 on failure — the next compile then just falls back to
+a regular import.
+-/
+@[export lean_wasm_load_snapshot]
+def wasmLoadSnapshot (path : String) : IO UInt32 := do
+  try
+    IO.eprintln s!"[WASM DEBUG] wasmLoadSnapshot: loading {path}"
+    let (cmdState, initModIdxs) ← unsafe Elab.loadHeaderSnapshotCmdState ⟨path⟩
+    let env := cmdState.env.setMainModule .anonymous
+    -- Replay the `[init]` attributes the imported modules would have run.
+    -- `runInitAttrsForModules` requires initializer execution to be enabled,
+    -- and `withImporting` clears the flag when it returns, so enable on both
+    -- sides (the same restore `runFrontend` performs after `--incr-load`).
+    unsafe enableInitializersExecution
+    withImporting do
+      unsafe runInitAttrsForModules env initModIdxs {}
+    unsafe enableInitializersExecution
+    let key := env.header.imports.map (·.module)
+    wasmEnvCache.modify (·.push (key, env))
+    IO.eprintln s!"[WASM DEBUG] wasmLoadSnapshot: cached env for {key}"
+    return 0
+  catch e =>
+    IO.eprintln s!"[WASM DEBUG] wasmLoadSnapshot failed: {e}"
+    return 1
 
 /-- Whether Lean was built with an address sanitizer enabled. -/
 @[extern "lean_internal_has_address_sanitizer"]
@@ -512,11 +682,14 @@ def shellMain (args : List String) (opts : ShellOptions) : IO UInt32 := do
       IO.eprintln "Expected exactly one file name"
       displayHelp (useStderr := true)
       return 1
+  IO.println s!"[DEBUG:I] fileName = {fileName}"
+  IO.println "[DEBUG:I] Reading file contents"
   let contents ← decodeLossyUTF8 <$> do
     if opts.useStdin then
       (← IO.getStdin).readBinToEnd
     else
       IO.FS.readBinFile fileName
+  IO.println s!"[DEBUG:I] contents length = {contents.length}"
   if opts.onlyDeps then
     Elab.printImports contents fileName
     return 0
@@ -538,7 +711,9 @@ def shellMain (args : List String) (opts : ShellOptions) : IO UInt32 := do
       pure (contents.sliceFrom endLinePos).copy
     else
       pure contents
+  IO.println "[DEBUG:J] Loading module setup"
   let setup? ← opts.setupFileName?.mapM ModuleSetup.load
+  IO.println s!"[DEBUG:J] setup? = {setup?.isSome}"
   let mainModuleName ←
     if let some setup := setup? then
       pure setup.name
@@ -550,6 +725,8 @@ def shellMain (args : List String) (opts : ShellOptions) : IO UInt32 := do
           throw e
     else
       pure `_stdin
+  IO.println s!"[DEBUG:J] mainModuleName = {mainModuleName}"
+  IO.println "[DEBUG:K] Calling Elab.runFrontend"
   let env? ← Elab.runFrontend contents opts.leanOpts fileName mainModuleName
     opts.trustLevel opts.oleanFileName? opts.ileanFileName? opts.jsonOutput opts.errorOnKinds
     #[] opts.printStats setup?

@@ -3,6 +3,8 @@ on:
   push:
     branches:
       - "master"
+      - "reinstate-wasm"
+      - "wasm-v4.35.0"
     tags:
       - "*"
   pull_request:
@@ -301,7 +303,8 @@ jobs:
                 // Unstamped builds are published too (`pr-release.yml`, `grove.yml`), so always pack
                 // and upload the artifact.
                 "upload": true,
-                "enabled": true,
+                // Disabled while iterating on the WASM build; TODO: set back to true
+                "enabled": false,
                 "check-rebootstrap": level >= 1,
                 // Done as part of test-bench
                 //"check-stage3": level >= 2,
@@ -392,6 +395,8 @@ jobs:
                 "prepare-llvm": "../script/prepare-llvm-macos.sh lean-llvm*",
                 "binary-check": "otool -L",
                 "tar": "gtar", // https://github.com/actions/runner-images/issues/2619
+                // Disabled while iterating on the WASM build; TODO: drop this override
+                "enabled": false,
               },
               {
                 "name": "Windows",
@@ -428,20 +433,49 @@ jobs:
               //  "cross": true,
               //  "shell": "bash -euxo pipefail {0}"
               //}
-              // {
-              //   "name": "Web Assembly",
-              //   "os": "ubuntu-latest",
-              //   // Build a native 32bit binary in stage0 and use it to compile the oleans and the wasm build
-              //   "CMAKE_OPTIONS": "-DCMAKE_C_COMPILER_WORKS=1 -DSTAGE0_USE_GMP=OFF -DSTAGE0_LEAN_EXTRA_CXX_FLAGS='-m32' -DSTAGE0_LEANC_OPTS='-m32' -DSTAGE0_CMAKE_CXX_COMPILER=clang++ -DSTAGE0_CMAKE_C_COMPILER=clang -DSTAGE0_CMAKE_EXECUTABLE_SUFFIX=\"\" -DUSE_GMP=OFF -DMMAP=OFF -DSTAGE0_MMAP=OFF -DCMAKE_AR=../emsdk/emsdk-main/upstream/emscripten/emar -DCMAKE_TOOLCHAIN_FILE=../emsdk/emsdk-main/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake -DLEAN_INSTALL_SUFFIX=-linux_wasm32 -DSTAGE0_CMAKE_LIBRARY_PATH=/usr/lib/i386-linux-gnu/",
-              //   "wasm": true,
-              //   "cmultilib": true,
-              //   "release": true,
-              //   "enabled": level >= 2,
-              //   "cross": true,
-              //   "shell": "bash -euxo pipefail {0}",
-              //   // Just a few selected tests because wasm is slow
-              //   "CTEST_OPTIONS": "-R \"leantest_1007\\.lean|leantest_Format\\.lean|leanruntest\\_1037.lean|leanruntest_ac_rfl\\.lean|leanruntest_tempfile.lean\\.|leanruntest_libuv\\.lean\""
-              // }
+              {
+                  "name": "Web Assembly",
+                  "os": "ubuntu-latest",
+                  // Build a native 32bit binary in stage0 and use it to compile the oleans and the wasm build.
+                  // -msse2 -mfpmath=sse: 32-bit x86 defaults to x87 floating point
+                  // (FLT_EVAL_METHOD=2), which lean.h rejects; SSE math gives FLT_EVAL_METHOD=0.
+                  // STAGE0_LEAN_EXTRA_LINKER_FLAGS='-m32': links run through leanc.sh, whose baked
+                  // ldflags don't inherit the compile flags, so the arch must be repeated there.
+                  "CMAKE_OPTIONS": "-DCMAKE_C_COMPILER_WORKS=1 -DSTAGE0_USE_GMP=OFF -DSTAGE0_LEAN_EXTRA_CXX_FLAGS='-m32 -msse2 -mfpmath=sse' -DSTAGE0_LEANC_OPTS='-m32 -msse2 -mfpmath=sse' -DSTAGE0_LEAN_EXTRA_LINKER_FLAGS='-m32' -DSTAGE0_CMAKE_CXX_COMPILER=clang++ -DSTAGE0_CMAKE_C_COMPILER=clang -DSTAGE0_CMAKE_EXECUTABLE_SUFFIX=\"\" -DUSE_GMP=OFF -DMMAP=OFF -DSTAGE0_MMAP=OFF -DUSE_MIMALLOC=OFF -DCMAKE_AR=$EMSDK/upstream/emscripten/emar -DCMAKE_TOOLCHAIN_FILE=$EMSDK/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake -DLEAN_INSTALL_SUFFIX=-linux_wasm32 -DSTAGE0_CMAKE_LIBRARY_PATH=/usr/lib/i386-linux-gnu/",
+                  "wasm": true,
+                  "cmultilib": true,
+                  "release": true,
+                  "enabled": true,
+                  // Secondary until WASM builds become stable
+                  "secondary": true,
+                  "cross": true,
+                  "shell": "bash -euxo pipefail {0}",
+                  "build-timeout": 90,
+                  // Just a few selected tests because wasm is slow
+                  "CTEST_OPTIONS": "-R \"leantest_1007\\.lean|leantest_Format\\.lean|leanruntest\\_1037.lean|leanruntest_ac_rfl\\.lean|leanruntest_tempfile.lean\\.|leanruntest_libuv\\.lean\""
+              },
+              {
+                  "name": "Linux 32bit",
+                  "os": "ubuntu-latest",
+                  // A fully NATIVE i386 build of this 4.33 tree, mirroring the wasm build's
+                  // config (no GMP/mimalloc/mmap, 32-bit pointers). Purpose: reproduce the
+                  // wasm Init-import memory runaway natively, where real tooling (gdb,
+                  // valgrind, heaptrack) works. The test step runs the built stage1 binary
+                  // on files that import Init, so this job alone answers whether the runaway
+                  // is 32-bit-generic (tests hang/OOM) or Emscripten-specific (tests pass).
+                  // -msse2/-mfpmath=sse: lean.h's FLT_EVAL_METHOD guard. LEANC_EXTRA_CC_FLAGS
+                  // and LEAN_EXTRA_LINKER_FLAGS repeat the arch on every leanc compile AND
+                  // link (leanc.sh's baked ldflags don't inherit compile flags).
+                  "CMAKE_OPTIONS": "-DCMAKE_C_COMPILER_WORKS=1 -DUSE_GMP=OFF -DMMAP=OFF -DUSE_MIMALLOC=OFF -DSTAGE0_USE_GMP=OFF -DSTAGE0_MMAP=OFF -DLEAN_EXTRA_CXX_FLAGS='-m32 -msse2 -mfpmath=sse' -DLEANC_OPTS='-m32 -msse2 -mfpmath=sse' -DLEANC_EXTRA_CC_FLAGS='-m32 -msse2 -mfpmath=sse' -DLEAN_EXTRA_LINKER_FLAGS='-m32' -DSTAGE0_LEAN_EXTRA_CXX_FLAGS='-m32 -msse2 -mfpmath=sse' -DSTAGE0_LEANC_OPTS='-m32 -msse2 -mfpmath=sse' -DSTAGE0_LEANC_EXTRA_CC_FLAGS='-m32 -msse2 -mfpmath=sse' -DSTAGE0_LEAN_EXTRA_LINKER_FLAGS='-m32' -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang -DSTAGE0_CMAKE_CXX_COMPILER=clang++ -DSTAGE0_CMAKE_C_COMPILER=clang -DCMAKE_LIBRARY_PATH=/usr/lib/i386-linux-gnu/ -DSTAGE0_CMAKE_LIBRARY_PATH=/usr/lib/i386-linux-gnu/ -DLEAN_INSTALL_SUFFIX=-linux_32",
+                  "cmultilib": true,
+                  "release": true,
+                  "enabled": true,
+                  "secondary": true,
+                  "shell": "bash -euxo pipefail {0}",
+                  "build-timeout": 90,
+                  // These run the BUILT stage1 binary on files importing Init — the repro signal.
+                  "CTEST_OPTIONS": "-R \"leantest_1007\\.lean|leantest_Format\\.lean|leanruntest\\_1037.lean|leanruntest_ac_rfl\\.lean|leanruntest_tempfile.lean\\.|leanruntest_libuv\\.lean\""
+              }
             ];
             if (lakeCi) {
               for (const job of matrix) {
