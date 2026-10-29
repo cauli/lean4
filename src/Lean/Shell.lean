@@ -57,20 +57,21 @@ These functions provide a WASM-friendly API that caches the environment
 between calls, avoiding the slow re-import of Init modules on each compile.
 -/
 
-/-- Cache of import-set → environment. Each distinct set of header imports gets
-its own cached environment, so `import Std …` (or any imports) is slow only on
-its first compile and fast on every repeat, just like Init-only code. -/
-private initialize wasmEnvCache : IO.Ref (Array (Array Name × Environment)) ← IO.mkRef #[]
+/-- Cache of environments by header: its imports, and whether the file is a
+`module`, which decides what the imports make visible. Each distinct header
+gets its own cached environment, so `import Std …` (or any imports) is slow
+only on its first compile and fast on every repeat, just like Init-only code. -/
+private initialize wasmEnvCache : IO.Ref (Array ((Array Name × Bool) × Environment)) ← IO.mkRef #[]
 
 /-- Contexts `lean_wasm_compile_with_context` has elaborated, oldest first: the
 context's text and the command state at its end. -/
 private initialize wasmContextCache : IO.Ref (Array (String × Elab.Command.State)) ← IO.mkRef #[]
 
-/-- Get or create the cached WASM environment for the given header `imports`.
-The first compile with a given import set imports it (slow); later compiles with
-the same set reuse the cached environment (fast). -/
-def getOrCreateWasmEnvFor (imports : Array Import) : IO Environment := do
-  let key := imports.map (·.module)
+/-- Get or create the cached WASM environment for a header with `imports`, of a
+`module` file or not. The first compile with a given header imports it (slow);
+later compiles with the same header reuse the cached environment (fast). -/
+def getOrCreateWasmEnvFor (imports : Array Import) (isModule : Bool) : IO Environment := do
+  let key := (imports.map (·.module), isModule)
   for (k, env) in (← wasmEnvCache.get) do
     if k == key then
       IO.eprintln "[WASM DEBUG] getOrCreateWasmEnvFor: returning cached env"
@@ -80,8 +81,12 @@ def getOrCreateWasmEnvFor (imports : Array Import) : IO Environment := do
   --  * `loadExts := true` loads the environment extensions — parser notation
   --    (e.g. `+`) and the instance database (e.g. `OfNat`). Without it (the
   --    default `false`), `#check 2 + 2` fails with "OfNat" / "unexpected '+'".
-  --  * `level := .exported` matches the only data the WASM build ships (base
-  --    `.olean`); the default `.private` expects absent private/server data.
+  --  * `level` follows the file, as in a native build: a `module` imports at
+  --    `.exported`, what a module may see. Any other file imports at
+  --    `.private`, which also makes the environment a non-module one, where
+  --    declarations are public by default. The WASM library may lack a
+  --    module's `.olean.private` part; the module then contributes the data of
+  --    the level below.
   --  * `leakEnv := true` keeps the compacted regions alive. Environments are
   --    cached and reused across compiles; with the default (regions freed after
   --    import) a later compile dereferences freed regions and fails. Freeing is
@@ -92,10 +97,18 @@ def getOrCreateWasmEnvFor (imports : Array Import) : IO Environment := do
   -- Re-enable it each time, as `runFrontend` does after `--incr-load`.
   unsafe enableInitializersExecution
   let env ← importModules imports {} 0
-    (level := .exported) (loadExts := true) (leakEnv := true)
+    (level := if isModule then .exported else .private) (loadExts := true) (leakEnv := true)
   IO.eprintln "[WASM DEBUG] getOrCreateWasmEnvFor: importModules completed"
   wasmEnvCache.modify (·.push (key, env))
   return env
+
+/-- The main module of code compiled from `fileName`, named after the file as
+the `lean` command names it. Under an anonymous main module, a notation for
+one of the file's own definitions fails with "Unknown constant `_private.0…`". -/
+private def wasmMainModule (fileName : String) : Name :=
+  match (System.FilePath.mk fileName).fileStem with
+  | some stem => Name.mkSimple stem
+  | none => `_stdin
 
 /--
 Compile Lean code using a cached environment.
@@ -121,9 +134,11 @@ def wasmCompile (code : String) (fileName : String := "<input>") : IO UInt32 := 
   let (header, parserState, headerMessages) ← Parser.parseHeader inputCtx
   IO.eprintln "[WASM DEBUG] Getting or creating environment for header imports..."
   let env ← getOrCreateWasmEnvFor (Elab.headerToImports header)
+    (Elab.HeaderSyntax.isModule header)
   IO.eprintln "[WASM DEBUG] Environment ready"
 
   let opts : Options := {}
+  let env := env.setMainModule (wasmMainModule fileName)
   let cmdState := Elab.Command.mkState env headerMessages opts
 
   -- Elaborate synchronously with `Frontend.processCommands` — a plain loop over
@@ -217,7 +232,7 @@ def wasmLoadSnapshot (path : String) : IO UInt32 := do
     withImporting do
       unsafe runInitAttrsForModules env initModIdxs {}
     unsafe enableInitializersExecution
-    let key := env.header.imports.map (·.module)
+    let key := (env.header.imports.map (·.module), env.header.isModule)
     wasmEnvCache.modify (·.push (key, env))
     IO.eprintln s!"[WASM DEBUG] wasmLoadSnapshot: cached env for {key}"
     return 0
@@ -291,6 +306,8 @@ def wasmCompileWithContext (context code : String) (fileName : String := "<input
       let inputCtx := Parser.mkInputContext context fileName
       let (header, parserState, headerMessages) ← Parser.parseHeader inputCtx
       let env ← getOrCreateWasmEnvFor (Elab.headerToImports header)
+        (Elab.HeaderSyntax.isModule header)
+      let env := env.setMainModule (wasmMainModule fileName)
       let (msgs, s) ← wasmElabCommands inputCtx (Elab.Command.mkState env {} {}) parserState
         headerMessages
       wasmPrintMessages inputCtx.fileMap msgs (fromContext := true)
