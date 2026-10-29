@@ -10,6 +10,9 @@ import Lean.Elab.Frontend
 import Lean.Elab.ParseImportsFast
 import Lean.Server.Watchdog
 import Lean.Server.FileWorker
+import Lean.Server.Completion
+import Lean.Elab.InfoTree.Util
+import Lean.Widget.InteractiveGoal
 import Lean.Compiler.LCNF.EmitC
 import Init.System.Platform
 import Lean.Compiler.Options
@@ -81,12 +84,14 @@ def getOrCreateWasmEnvFor (imports : Array Import) (isModule : Bool) : IO Enviro
   --  * `loadExts := true` loads the environment extensions — parser notation
   --    (e.g. `+`) and the instance database (e.g. `OfNat`). Without it (the
   --    default `false`), `#check 2 + 2` fails with "OfNat" / "unexpected '+'".
-  --  * `level` follows the file, as in a native build: a `module` imports at
-  --    `.exported`, what a module may see. Any other file imports at
-  --    `.private`, which also makes the environment a non-module one, where
-  --    declarations are public by default. The WASM library may lack a
-  --    module's `.olean.private` part; the module then contributes the data of
-  --    the level below.
+  --  * `level` follows the file, as in a native build: a `module` imports what a module
+  --    may see, at `.server`, which adds the docstrings and other data that
+  --    `lean_wasm_info_at` and `lean_wasm_complete` show, as the language
+  --    server does. Any other file imports at `.private`, which also makes the
+  --    environment a non-module one, where declarations are public by default.
+  --    The WASM library may lack a module's `.olean.server` or
+  --    `.olean.private` part; the module then contributes the data of the
+  --    level below.
   --  * `leakEnv := true` keeps the compacted regions alive. Environments are
   --    cached and reused across compiles; with the default (regions freed after
   --    import) a later compile dereferences freed regions and fails. Freeing is
@@ -97,7 +102,7 @@ def getOrCreateWasmEnvFor (imports : Array Import) (isModule : Bool) : IO Enviro
   -- Re-enable it each time, as `runFrontend` does after `--incr-load`.
   unsafe enableInitializersExecution
   let env ← importModules imports {} 0
-    (level := if isModule then .exported else .private) (loadExts := true) (leakEnv := true)
+    (level := if isModule then .server else .private) (loadExts := true) (leakEnv := true)
   IO.eprintln "[WASM DEBUG] getOrCreateWasmEnvFor: importModules completed"
   wasmEnvCache.modify (·.push (key, env))
   return env
@@ -110,71 +115,112 @@ private def wasmMainModule (fileName : String) : Name :=
   | some stem => Name.mkSimple stem
   | none => `_stdin
 
-/--
-Compile Lean code using a cached environment.
+/-- How many elaborated contexts to keep; a reader moving between a few
+exercises should not pay for any of their contexts twice. -/
+private def wasmContextCacheSize : Nat := 4
 
-This is the main WASM entry point. The first call will import Init modules (slow),
-but subsequent calls reuse the cached environment (fast).
+/-- A command of the code compiled last, with the info tree of its
+elaboration, which the position queries (`lean_wasm_info_at`,
+`lean_wasm_complete`) read. -/
+private structure WasmCommand where
+  stx  : Syntax
+  tree : Elab.InfoTree
 
-The `fileName` parameter is optional - it's only used as a label in error messages,
-not for actual file I/O. The `code` string is processed directly in memory.
+/-- What the position queries need of the code compiled last. -/
+private structure WasmRun where
+  fileMap  : FileMap
+  /-- The environment after the code, for the docstrings of syntax. -/
+  env      : Environment
+  commands : Array WasmCommand
 
-Returns 0 on success, 1 on error. Output is written to stdout as JSON.
--/
-@[export lean_wasm_compile]
-def wasmCompile (code : String) (fileName : String := "<input>") : IO UInt32 := do
-  IO.eprintln s!"[WASM DEBUG] wasmCompile called with code length={code.length}, fileName={fileName}"
-  IO.eprintln "[WASM DEBUG] Creating input context..."
-  let inputCtx := Parser.mkInputContext code fileName
-  -- Parse the file's header (its `import` lines) and import that closure into a
-  -- per-import-set cached environment, then elaborate the body against it. This
-  -- is what lets user code `import Std …` (or any modules) work and stay fast on
-  -- repeat. `headerToImports` includes `Init` implicitly unless the file is
-  -- `prelude`, matching the normal frontend.
-  let (header, parserState, headerMessages) ← Parser.parseHeader inputCtx
-  IO.eprintln "[WASM DEBUG] Getting or creating environment for header imports..."
-  let env ← getOrCreateWasmEnvFor (Elab.headerToImports header)
-    (Elab.HeaderSyntax.isModule header)
-  IO.eprintln "[WASM DEBUG] Environment ready"
+private initialize wasmLastRun : IO.Ref (Option WasmRun) ← IO.mkRef none
 
-  let opts : Options := {}
-  let env := env.setMainModule (wasmMainModule fileName)
-  let cmdState := Elab.Command.mkState env headerMessages opts
+/-- The completion list `lean_wasm_complete` printed last, with what
+`lean_wasm_resolve_completion` needs to describe its items. -/
+private structure WasmCompletions where
+  fileMap : FileMap
+  pos     : String.Pos.Raw
+  command : WasmCommand
+  items   : Array Lsp.ResolvableCompletionItem
 
-  -- Elaborate synchronously with `Frontend.processCommands` — a plain loop over
-  -- `Command.elabCommandTopLevel` — rather than `Elab.IO.processCommands`. The
-  -- latter drives elaboration through the language-server snapshot/task
-  -- infrastructure, which spawns elaboration tasks. In the single-threaded WASM
-  -- worker those tasks are never drained, leaving the runtime in a state where
-  -- the *next* `lean_wasm_compile` call fails immediately. The synchronous loop
-  -- creates no tasks, so the cached environment stays reusable across compiles.
-  let frontendCtx : Elab.Frontend.Context := { inputCtx }
-  -- Start parsing commands right after the header, so the header's `import` lines
-  -- are not re-parsed as commands (they aren't commands and would error).
-  let frontendState : Elab.Frontend.State :=
-    { commandState := cmdState, parserState := parserState, cmdPos := parserState.pos }
-  -- `Command.elabCommandTopLevel` resets `commandState.messages` at the start of
-  -- every command, so the final state holds only the last command's messages.
-  -- Collect the log after each command instead of reading the end state; seed it
-  -- with any header (import) parse errors.
-  let collect : Elab.Frontend.FrontendM MessageLog := do
-    let mut acc : MessageLog := headerMessages
+private initialize wasmLastCompletions : IO.Ref (Option WasmCompletions) ← IO.mkRef none
+
+/-- The command that `cmd ... in` and `set_option ... in` wrap. -/
+private partial def wasmUnwrapIn (stx : Syntax) : Syntax :=
+  if stx.isOfKind ``Parser.Command.in then wasmUnwrapIn stx[2] else stx
+
+/-- Whether the `example` `stx` states a proposition, judged from its
+elaborated type in `tree`. -/
+private def wasmExampleIsProp (stx : Syntax) (tree : Elab.InfoTree) : IO Bool := do
+  -- `example` binders `: type` `:= value`
+  let some range := stx[1][1][0][1].getRange? | return false
+  let found := tree.foldInfo (init := none) fun ctx info found =>
+    found <|> match info with
+      | .ofTermInfo ti => if ti.stx.getRange? == some range then some (ctx, ti) else none
+      | _ => none
+  let some (ctx, ti) := found | return false
+  ctx.runMetaM ti.lctx do Meta.isProp (← instantiateMVars ti.expr)
+
+/-- The silent "Goals accomplished!" message Lean's language server adds for a
+theorem, or an example stating a proposition, that elaborated without errors
+or `sorry`; editors mark such a declaration as done. -/
+private def wasmGoalsAccomplished? (inputCtx : Parser.InputContext) (stx : Syntax)
+    (tree : Elab.InfoTree) (msgs : MessageLog) : IO (Option Message) := do
+  let cmd := wasmUnwrapIn stx
+  unless cmd.isOfKind ``Parser.Command.declaration do return none
+  let decl := cmd[1]
+  let isProof ← if decl.isOfKind ``Parser.Command.theorem then pure true
+    else if decl.isOfKind ``Parser.Command.example then wasmExampleIsProp decl tree
+    else pure false
+  let failed := msgs.toList.any fun m =>
+    m.severity matches .error || m.data.hasTag (· == `hasSorry)
+  let (some pos, some endPos) := (decl.getPos?, decl.getTailPos?) | return none
+  if !isProof || failed then return none
+  return some {
+    fileName := inputCtx.fileName
+    pos := inputCtx.fileMap.toPosition pos
+    endPos := inputCtx.fileMap.toPosition endPos
+    severity := .information
+    isSilent := true
+    data := .tagged `goalsAccomplished "Goals accomplished!" }
+
+/-- Elaborates the commands of `inputCtx` from `parserState` on, starting in
+`cmdState`, and collects every command's messages and info tree.
+
+The loop is `Frontend.processCommand`'s, synchronous, rather than
+`Elab.IO.processCommands`, which drives elaboration through the language
+server's snapshot tasks. `Command.elabCommandTopLevel` resets the messages and
+info trees at the start of every command, so they are collected after each. -/
+private def wasmElabCommands (inputCtx : Parser.InputContext) (cmdState : Elab.Command.State)
+    (parserState : Parser.ModuleParserState) (initial : MessageLog := {}) :
+    IO (MessageLog × Array WasmCommand × Elab.Command.State) := do
+  let collect : Elab.Frontend.FrontendM (MessageLog × Array WasmCommand) := do
+    let mut acc := initial
+    let mut cmds := #[]
     let mut done := false
     while !done do
       done := (← Elab.Frontend.processCommand)
-      acc := acc ++ (← Elab.Frontend.getCommandState).messages
-    return acc
-  let (msgLog, _s) ← StateRefT'.run (ReaderT.run collect frontendCtx) frontendState
+      let s ← Elab.Frontend.getCommandState
+      acc := acc ++ s.messages
+      let stx := (← get).commands.back!
+      let infoState ← if s.infoState.lazyAssignment.isEmpty then pure s.infoState
+        else IO.wait s.infoState.substituteLazy
+      if let some tree := infoState.trees[0]? then
+        cmds := cmds.push { stx, tree }
+        if let some msg ← wasmGoalsAccomplished? inputCtx stx tree s.messages then
+          acc := acc.add msg
+    return (acc, cmds)
+  let ((msgs, cmds), s) ← StateRefT'.run (ReaderT.run collect { inputCtx })
+    { commandState := cmdState, parserState, cmdPos := parserState.pos }
+  return (msgs, cmds, s.commandState)
 
-  -- Output messages as JSON
-  let messages := msgLog.toList
-  IO.eprintln s!"[WASM DEBUG] Processing {messages.length} messages..."
-  for msg in messages do
-    -- Convert to interactive diagnostic, then to plain diagnostic for JSON
-    let interactiveDiag ← Widget.msgToInteractiveDiagnostic inputCtx.fileMap msg false
-    let diag := interactiveDiag.toDiagnostic
-    -- Add extra fields for WASM consumers
-    let json := Json.mkObj [
+/-- Prints `msgs` one JSON object per line, adding `"context": true` to those
+of a context. -/
+private def wasmPrintMessages (fileMap : FileMap) (msgs : MessageLog) (fromContext : Bool) :
+    IO Unit := do
+  for msg in msgs.toList do
+    let diag := (← Widget.msgToInteractiveDiagnostic fileMap msg false).toDiagnostic
+    let json := Json.mkObj <| [
       ("fileName", Json.str msg.fileName),
       ("pos", Json.mkObj [("line", msg.pos.line), ("column", msg.pos.column)]),
       ("endPos", match msg.endPos with
@@ -187,11 +233,43 @@ def wasmCompile (code : String) (fileName : String := "<input>") : IO UInt32 := 
       ("isSilent", msg.isSilent),
       ("keepFullRange", msg.keepFullRange),
       ("kind", Json.str msg.kind.toString)
-    ]
+    ] ++ (if fromContext then [("context", Json.bool true)] else [])
     IO.println json.compress
 
-  -- Return success/failure
-  let hasErrors := messages.any (·.severity == .error)
+/--
+Compile Lean code using a cached environment.
+
+This is the main WASM entry point. The first call will import Init modules (slow),
+but subsequent calls reuse the cached environment (fast).
+
+The `fileName` parameter is optional - it's only used as a label in error messages,
+not for actual file I/O. The `code` string is processed directly in memory.
+
+Returns 0 on success, 1 on error. Output is written to stdout as JSON, one
+message per line. A theorem or example that checks completely gets a silent
+message of kind `goalsAccomplished`.
+-/
+@[export lean_wasm_compile]
+def wasmCompile (code : String) (fileName : String := "<input>") : IO UInt32 := do
+  IO.eprintln s!"[WASM DEBUG] wasmCompile called with code length={code.length}, fileName={fileName}"
+  let inputCtx := Parser.mkInputContext code fileName
+  -- Parse the file's header (its `import` lines) and import that closure into a
+  -- per-import-set cached environment, then elaborate the body against it. This
+  -- is what lets user code `import Std …` (or any modules) work and stay fast on
+  -- repeat. `headerToImports` includes `Init` implicitly unless the file is
+  -- `prelude`, matching the normal frontend.
+  let (header, parserState, headerMessages) ← Parser.parseHeader inputCtx
+  IO.eprintln "[WASM DEBUG] Getting or creating environment for header imports..."
+  let env ← getOrCreateWasmEnvFor (Elab.headerToImports header)
+    (Elab.HeaderSyntax.isModule header)
+  IO.eprintln "[WASM DEBUG] Environment ready"
+  -- Seed the log with any header (import) parse errors.
+  let env := env.setMainModule (wasmMainModule fileName)
+  let (msgs, commands, s) ← wasmElabCommands inputCtx (Elab.Command.mkState env headerMessages {})
+    parserState headerMessages
+  wasmLastRun.set (some { fileMap := inputCtx.fileMap, env := s.env, commands })
+  wasmPrintMessages inputCtx.fileMap msgs (fromContext := false)
+  let hasErrors := msgs.toList.any (·.severity == .error)
   IO.eprintln s!"[WASM DEBUG] Done, hasErrors={hasErrors}"
   return if hasErrors then 1 else 0
 
@@ -203,6 +281,8 @@ Call this if you need to re-import modules (e.g., after changing search paths).
 def wasmReset : IO Unit := do
   wasmEnvCache.set #[]
   wasmContextCache.set #[]
+  wasmLastRun.set none
+  wasmLastCompletions.set none
   IO.println "[WASM] Environment cache cleared"
 
 /--
@@ -240,48 +320,6 @@ def wasmLoadSnapshot (path : String) : IO UInt32 := do
     IO.eprintln s!"[WASM DEBUG] wasmLoadSnapshot failed: {e}"
     return 1
 
-/-- How many elaborated contexts to keep; a reader moving between a few
-exercises should not pay for any of their contexts twice. -/
-private def wasmContextCacheSize : Nat := 4
-
-/-- Elaborates the commands of `inputCtx` from `parserState` on, starting in
-`cmdState`, with `wasmCompile`'s synchronous loop and message collection. -/
-private def wasmElabCommands (inputCtx : Parser.InputContext) (cmdState : Elab.Command.State)
-    (parserState : Parser.ModuleParserState) (initial : MessageLog := {}) :
-    IO (MessageLog × Elab.Command.State) := do
-  let collect : Elab.Frontend.FrontendM MessageLog := do
-    let mut acc := initial
-    let mut done := false
-    while !done do
-      done := (← Elab.Frontend.processCommand)
-      acc := acc ++ (← Elab.Frontend.getCommandState).messages
-    return acc
-  let (msgs, s) ← StateRefT'.run (ReaderT.run collect { inputCtx })
-    { commandState := cmdState, parserState, cmdPos := parserState.pos }
-  return (msgs, s.commandState)
-
-/-- Prints `msgs` as `wasmCompile` does, one JSON object per line, adding
-`"context": true` to those of a context. -/
-private def wasmPrintMessages (fileMap : FileMap) (msgs : MessageLog) (fromContext : Bool) :
-    IO Unit := do
-  for msg in msgs.toList do
-    let diag := (← Widget.msgToInteractiveDiagnostic fileMap msg false).toDiagnostic
-    let json := Json.mkObj <| [
-      ("fileName", Json.str msg.fileName),
-      ("pos", Json.mkObj [("line", msg.pos.line), ("column", msg.pos.column)]),
-      ("endPos", match msg.endPos with
-        | some p => Json.mkObj [("line", p.line), ("column", p.column)]
-        | none => Json.null),
-      ("severity", match msg.severity with
-        | .error => "error" | .warning => "warning" | .information => "information"),
-      ("caption", msg.caption),
-      ("data", diag.message),
-      ("isSilent", msg.isSilent),
-      ("keepFullRange", msg.keepFullRange),
-      ("kind", Json.str msg.kind.toString)
-    ] ++ (if fromContext then [("context", Json.bool true)] else [])
-    IO.println json.compress
-
 /--
 Compiles `code` as the continuation of `context`, elaborating `context` only
 once across calls.
@@ -308,7 +346,7 @@ def wasmCompileWithContext (context code : String) (fileName : String := "<input
       let env ← getOrCreateWasmEnvFor (Elab.headerToImports header)
         (Elab.HeaderSyntax.isModule header)
       let env := env.setMainModule (wasmMainModule fileName)
-      let (msgs, s) ← wasmElabCommands inputCtx (Elab.Command.mkState env {} {}) parserState
+      let (msgs, _, s) ← wasmElabCommands inputCtx (Elab.Command.mkState env {} {}) parserState
         headerMessages
       wasmPrintMessages inputCtx.fileMap msgs (fromContext := true)
       -- Keep only what `code` builds on; messages, info trees and pending
@@ -321,9 +359,161 @@ def wasmCompileWithContext (context code : String) (fileName : String := "<input
         cache.extract (cache.size - min cache.size wasmContextCacheSize) cache.size
       pure s
   let inputCtx := Parser.mkInputContext code fileName
-  let (msgs, _) ← wasmElabCommands inputCtx ctxState {}
+  let (msgs, commands, s) ← wasmElabCommands inputCtx ctxState {}
+  wasmLastRun.set (some { fileMap := inputCtx.fileMap, env := s.env, commands })
   wasmPrintMessages inputCtx.fileMap msgs (fromContext := false)
   return if msgs.toList.any (·.severity == .error) then 1 else 0
+
+/-! Position queries about the code compiled last
+
+An editor asks these about the reader's cursor or mouse. They read the info
+trees `lean_wasm_compile` and `lean_wasm_compile_with_context` keep of the code
+they compiled last, as the language server reads a document's, so they never
+elaborate. Positions are Lean's: a 1-based line and a 0-based column counted in
+codepoints, in the code's own coordinates.
+-/
+
+private def wasmPosJson (p : Position) : Json :=
+  Json.mkObj [("line", p.line), ("column", p.column)]
+
+/-- The command of `run` that `pos` falls in: the last one starting at or
+before it. A cursor after the code's last character belongs to its last
+command, not to the end of the input, which starts there too. -/
+private def wasmCommandAt? (run : WasmRun) (pos : String.Pos.Raw) : Option WasmCommand :=
+  run.commands.reverse.find? fun cmd =>
+    !cmd.stx.isOfKind ``Parser.Command.eoi && cmd.stx.getPos?.any (· ≤ pos)
+
+private def wasmGoalJson (goal : Widget.InteractiveGoal) : Json :=
+  Json.mkObj [
+    ("name", toJson goal.userName?),
+    ("hyps", Json.arr <| goal.hyps.map fun h => Json.mkObj [
+      ("names", toJson h.names),
+      ("type", Json.str h.type.stripTags),
+      ("value", toJson (h.val?.map (·.stripTags)))]),
+    ("target", Json.str goal.type.stripTags)]
+
+/-- The goals of the tactic proof at `pos`, as the language server's
+`$/lean/plainGoal` reports them; `null` where there is no tactic. -/
+private def wasmGoalsAt (fileMap : FileMap) (tree : Elab.InfoTree) (pos : String.Pos.Raw) :
+    IO Json := do
+  let results := tree.goalsAt? fileMap pos
+  if results.isEmpty then return .null
+  let mut goals := #[]
+  for { ctxInfo := ci, tacticInfo := ti, useAfter, .. } in results do
+    let ci := { ci with mctx := if useAfter then ti.mctxAfter else ti.mctxBefore }
+    let gs ← ci.runMetaM {} do
+      (if useAfter then ti.goalsAfter else ti.goalsBefore).toArray.mapM Widget.goalToInteractive
+    goals := goals ++ gs.map wasmGoalJson
+  return .arr goals
+
+/-- The expected type of the term at `pos`, with its context, as the language
+server's `$/lean/plainTermGoal` reports it. -/
+private def wasmTermGoalAt (tree : Elab.InfoTree) (pos : String.Pos.Raw) : IO Json := do
+  let some { ctx := ci, info := i@(.ofTermInfo ti), .. } := tree.termGoalAt? pos
+    | return .null
+  let ty ← ci.runMetaM i.lctx do
+    instantiateMVars <| ti.expectedType?.getD (← Meta.inferType ti.expr)
+  -- A binder's own hypothesis is the binder itself.
+  let lctx := if ti.isBinder then i.lctx.pop else i.lctx
+  let goal ← ci.runMetaM lctx do
+    Widget.goalToInteractive (← Meta.mkFreshExprMVar ty).mvarId!
+  return wasmGoalJson goal
+
+/-- The hover text at `pos`, chosen as the language server's hover chooses it:
+the info tree's, unless the docstring of syntax around `pos` (a tactic's,
+say) belongs to a narrower range. -/
+private def wasmHoverAt (run : WasmRun) (cmd : WasmCommand) (pos : String.Pos.Raw) :
+    IO Json := do
+  let hover (text : String) (r : Syntax.Range) : Json := Json.mkObj [
+    ("text", Json.str text),
+    ("pos", wasmPosJson (run.fileMap.toPosition r.start)),
+    ("endPos", wasmPosJson (run.fileMap.toPosition r.stop))]
+  let stxDoc? ← match cmd.stx.findStack? (·.getRange?.any (·.contains pos)) with
+    | some stack => stack.findSomeM? fun (stx, _) => do
+      let .node _ kind _ := stx | pure none
+      return (← findDocString? run.env kind).map (·, stx.getRange?.get!)
+    | none => pure none
+  if let some result := cmd.tree.hoverableInfoAtM? (m := Id) pos then
+    if let some range := result.info.range? then
+      if stxDoc?.all fun (_, stxRange) => stxRange.includes range then
+        if let some fmt ← result.info.fmtHover? result.ctx then
+          return hover (toString fmt.fmt) range
+  if let some (doc, range) := stxDoc? then
+    return hover doc range
+  return .null
+
+/--
+Prints what an editor shows for position `line`:`column` of the code compiled
+last, as one JSON object:
+
+    {"goals": [goal] | null, "termGoal": goal | null,
+     "hover": {"text": <markdown>, "pos": <position>, "endPos": <position>} | null}
+
+A goal is `{"name": <case name> | null, "hyps": [{"names", "type", "value"}],
+"target"}`. `goals` is `null` outside tactic proofs and `[]` where a proof is
+complete.
+-/
+@[export lean_wasm_info_at]
+def wasmInfoAt (line column : UInt32) : IO Unit := do
+  let mut goals := Json.null
+  let mut termGoal := Json.null
+  let mut hover := Json.null
+  if let some run ← wasmLastRun.get then
+    let pos := run.fileMap.ofPosition ⟨line.toNat, column.toNat⟩
+    if let some cmd := wasmCommandAt? run pos then
+      goals ← wasmGoalsAt run.fileMap cmd.tree pos
+      termGoal ← wasmTermGoalAt cmd.tree pos
+      hover ← wasmHoverAt run cmd pos
+  IO.println (Json.mkObj [("goals", goals), ("termGoal", termGoal), ("hover", hover)]).compress
+
+/--
+Prints the completions Lean's language server offers at `line`:`column` of the
+code compiled last, as `{"items": [item], "incomplete": <bool>}`. An item has
+its `label`, its LSP `kind` (a `CompletionItemKind` number) when known, and
+`deprecated`. Lean narrows the items to those that fuzzily match the name
+being typed; an editor ranks and narrows them further as typing goes on.
+`lean_wasm_resolve_completion` describes an item, by its index in `items`.
+-/
+@[export lean_wasm_complete]
+def wasmComplete (line column : UInt32) : IO Unit := do
+  wasmLastCompletions.set none
+  let mut items := #[]
+  let mut incomplete := true
+  if let some run ← wasmLastRun.get then
+    let leanPos : Position := ⟨line.toNat, column.toNat⟩
+    let pos := run.fileMap.ofPosition leanPos
+    if let some cmd := wasmCommandAt? run pos then
+      let find := Server.Completion.find? "file:///input.lean" (run.fileMap.leanPosToLspPos leanPos)
+        run.fileMap pos cmd.stx cmd.tree {}
+      if let .ok list ← find.run (← Server.RequestCancellationToken.new) then
+        wasmLastCompletions.set
+          (some { fileMap := run.fileMap, pos, command := cmd, items := list.items })
+        incomplete := list.isIncomplete
+        items := list.items.map fun item => Json.mkObj <|
+          [("label", Json.str item.label),
+           ("deprecated", Json.bool (item.tags?.any (·.contains .deprecated)))] ++
+          (item.kind?.map fun k => ("kind", toJson k)).toList
+  IO.println (Json.mkObj [("items", Json.arr items), ("incomplete", incomplete)]).compress
+
+/--
+Prints `{"detail": <type> | null, "documentation": <markdown> | null}` for the
+item at `index` in the list `lean_wasm_complete` printed last, as the language
+server's `completionItem/resolve` fills them in.
+-/
+@[export lean_wasm_resolve_completion]
+def wasmResolveCompletion (index : UInt32) : IO Unit := do
+  let mut detail := Json.null
+  let mut documentation := Json.null
+  if let some c ← wasmLastCompletions.get then
+    if let some item := c.items[index.toNat]? then
+      let mut out : Lsp.CompletionItem :=
+        { label := item.label, detail? := item.detail?, documentation? := item.documentation? }
+      if let some { id? := some id, cPos? := some cPos, .. } := item.data? then
+        out ← Server.Completion.resolveCompletionItem? c.fileMap c.pos c.command.stx c.command.tree
+          out id cPos
+      detail := toJson out.detail?
+      documentation := toJson (out.documentation?.map (·.value))
+  IO.println (Json.mkObj [("detail", detail), ("documentation", documentation)]).compress
 
 /-- Whether Lean was built with an address sanitizer enabled. -/
 @[extern "lean_internal_has_address_sanitizer"]
