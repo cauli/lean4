@@ -224,8 +224,10 @@ jobs:
           cp build/stage1/stdlib.make linkkit/stdlib.make.txt
           cp build/stage1/leanc.sh linkkit/leanc.sh.txt
           cp build/stage1/CMakeCache.txt linkkit/cmake-cache.txt
-          cp src/emscripten-exports.txt src/wasm-dlsym.js linkkit/
-          cp src/emscripten-exports.txt linkkit/emscripten-exports-canonical.txt
+          # The export lists the link generated (script/gen-emscripten-exports.py).
+          find build -name 'emscripten-exports*.txt' -path '*stage1*' -exec cp {} linkkit/ \;
+          cp linkkit/emscripten-exports.txt linkkit/emscripten-exports-canonical.txt
+          cp src/wasm-dlsym.js linkkit/
           cp docker-wasm/relink-local.sh linkkit/
           emcc --version > linkkit/sdk-version.txt
           git rev-parse HEAD > linkkit/githash.txt

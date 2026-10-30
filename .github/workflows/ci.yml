@@ -4,6 +4,7 @@ on:
     branches:
       - "master"
       - "reinstate-wasm"
+      - "wasm-ide-62b6a22"
     tags:
       - "*"
   pull_request:

@@ -910,11 +910,11 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
   # code — mandatorily for body-less @[extern] decls like the IO primitives —
   # via dlsym(RTLD_DEFAULT), which searches the wasm export table) while
   # letting wasm-ld GC everything not reachable from the export list.
-  # emscripten-exports.txt pins the symbols dlsym must see: the C runtime API
-  # (lean_*), the l_<mangled>[___boxed] stems of every @[extern] decl in the
-  # shipped libraries, and the entry points the playground workers call. All
-  # other Lean functions stay callable through their IR (shipped as .ir parts),
-  # just interpreted instead of native. This replaces MAIN_MODULE=1 +
+  # emscripten-exports.txt pins the symbols dlsym must see; it is generated from
+  # the libraries just before the link (script/gen-emscripten-exports.py says
+  # what it holds and why), so it always matches this build. All other Lean
+  # functions stay callable through their IR (shipped as .ir parts), just
+  # interpreted instead of native. This replaces MAIN_MODULE=1 +
   # LINKABLE=1 + EXPORT_ALL=1, whose ~230k-entry export table dominated the
   # glue JS and blocked all DCE (WebKit on iPhone dies compiling the result).
   # PTHREAD_POOL_SIZE pre-spawns worker threads so Lean can create threads without
@@ -926,9 +926,16 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
   # memory does NOT grow here (the browser's SharedArrayBuffer isn't resizable in
   # this config), so the worker reserves the real size up front; MAXIMUM_MEMORY=4GB
   # raises the wasm32 ceiling from 2GB so we can test whether the import fits.
+  # EXIT_RUNTIME=1 lets a one-shot `lean` run tear down when main() returns, but
+  # it also exits the runtime, closing stdin/stdout/stderr, after any event-loop
+  # callback finds nothing keeping it alive. A host that never runs main() and
+  # calls lean_wasm_compile repeatedly would lose stderr the first time a Lean
+  # thread proxies work to the main thread, so the export list includes
+  # emscripten_runtime_keepalive_push for those hosts to call once after boot.
+  set(LEAN_EXE_PRELINK "python3 ${LEAN_SOURCE_DIR}/../script/gen-emscripten-exports.py --nm ${CMAKE_NM} --full ${CMAKE_BINARY_DIR}/emscripten-exports.txt --slim ${CMAKE_BINARY_DIR}/emscripten-exports-slim.txt ${LIB}/temp/libleanmain.a ${LIB}/temp/libleanshell.a ${LIB}/lean/libleancpp.a ${LIB}/lean/libInit.a ${LIB}/lean/libStd.a ${LIB}/lean/libLean.a ${LIB}/lean/libleanrt.a")
   string(
     APPEND LEAN_EXE_LINKER_FLAGS
-    " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} ${EMSCRIPTEN_LINK_SETTINGS} -lnodefs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=2 -s ERROR_ON_UNDEFINED_SYMBOLS=0 -sEXPORTED_FUNCTIONS=@${LEAN_SOURCE_DIR}/emscripten-exports.txt -sEXPORTED_RUNTIME_METHODS=ccall,callMain,FS,ENV,getValue,setValue,stringToNewUTF8,UTF8ToString -s STACK_SIZE=16777216 -sINITIAL_MEMORY=67108864 -sMAXIMUM_MEMORY=4294967296 -sPTHREAD_POOL_SIZE=4"
+    " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} ${EMSCRIPTEN_LINK_SETTINGS} -lnodefs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=2 -s ERROR_ON_UNDEFINED_SYMBOLS=0 -sEXPORTED_FUNCTIONS=@${CMAKE_BINARY_DIR}/emscripten-exports.txt -sEXPORTED_RUNTIME_METHODS=ccall,callMain,FS,ENV,getValue,setValue,stringToNewUTF8,UTF8ToString -s STACK_SIZE=16777216 -sINITIAL_MEMORY=67108864 -sMAXIMUM_MEMORY=4294967296 -sPTHREAD_POOL_SIZE=4"
   )
   if(EMSCRIPTEN_COMPACT_EXPORTS)
     # 🤖 This adapter requires MAIN_MODULE's dynamic linker, not the library links.
