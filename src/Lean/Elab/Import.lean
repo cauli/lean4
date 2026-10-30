@@ -145,11 +145,11 @@ def processHeaderCore
     (headerStx? : Option HeaderSyntax := none)
     (origHeaderStx? : Option HeaderSyntax := none)
     : IO (Environment × MessageLog) := do
-  -- Determine import level based on context
-  -- Emscripten/WASM builds only have .exported level files, so always use that
-  let level : OLeanLevel := if System.Platform.isEmscripten then
-    .exported
-  else if isModule then
+  -- WASM libraries may lack the `.olean.server` and `.olean.private` parts; a
+  -- module without one contributes the data of the level below
+  -- (`ImportedModule.mainModule?`), so the level follows the file as in a
+  -- native build, and a file without `module` gets a non-module environment.
+  let level : OLeanLevel := if isModule then
     if Elab.inServer.get opts then .server else .exported
   else
     .private
