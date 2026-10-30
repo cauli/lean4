@@ -167,7 +167,7 @@ or `sorry`; editors mark such a declaration as done. -/
 private def wasmGoalsAccomplished? (inputCtx : Parser.InputContext) (stx : Syntax)
     (tree : Elab.InfoTree) (msgs : MessageLog) : IO (Option Message) := do
   let cmd := wasmUnwrapIn stx
-  unless cmd.isOfKind ``Parser.Command.declaration do return none
+  unless cmd.isOfKind ``Parser.Command.declaration && !stx.hasMissing do return none
   let decl := cmd[1]
   let isProof ← if decl.isOfKind ``Parser.Command.theorem then pure true
     else if decl.isOfKind ``Parser.Command.example then wasmExampleIsProp decl tree
@@ -190,7 +190,11 @@ private def wasmGoalsAccomplished? (inputCtx : Parser.InputContext) (stx : Synta
 The loop is `Frontend.processCommand`'s, synchronous, rather than
 `Elab.IO.processCommands`, which drives elaboration through the language
 server's snapshot tasks. `Command.elabCommandTopLevel` resets the messages and
-info trees at the start of every command, so they are collected after each. -/
+info trees at the start of every command, so they are collected after each,
+and the parser's messages (`unexpected end of input`, say) are kept apart
+before that reset. A command that does not parse is elaborated with its
+elaboration errors suppressed, so its parser's messages may be all that
+report it. -/
 private def wasmElabCommands (inputCtx : Parser.InputContext) (cmdState : Elab.Command.State)
     (parserState : Parser.ModuleParserState) (initial : MessageLog := {}) :
     IO (MessageLog × Array WasmCommand × Elab.Command.State) := do
@@ -199,15 +203,25 @@ private def wasmElabCommands (inputCtx : Parser.InputContext) (cmdState : Elab.C
     let mut cmds := #[]
     let mut done := false
     while !done do
-      done := (← Elab.Frontend.processCommand)
+      Elab.Frontend.updateCmdPos
       let s ← Elab.Frontend.getCommandState
-      acc := acc ++ s.messages
-      let stx := (← get).commands.back!
+      let scope := s.scopes.head!
+      let pmctx := { env := s.env, options := scope.opts, currNamespace := scope.currNamespace,
+                     openDecls := scope.openDecls }
+      let (stx, parserState, parseMessages) :=
+        Parser.parseCommand inputCtx pmctx (← Elab.Frontend.getParserState) {}
+      modify fun st => { st with commands := st.commands.push stx }
+      Elab.Frontend.setParserState parserState
+      Elab.Frontend.elabCommandAtFrontend stx
+      done := Parser.isTerminalCommand stx
+      let s ← Elab.Frontend.getCommandState
+      let msgs := parseMessages ++ s.messages
+      acc := acc ++ msgs
       let infoState ← if s.infoState.lazyAssignment.isEmpty then pure s.infoState
         else IO.wait s.infoState.substituteLazy
       if let some tree := infoState.trees[0]? then
         cmds := cmds.push { stx, tree }
-        if let some msg ← wasmGoalsAccomplished? inputCtx stx tree s.messages then
+        if let some msg ← wasmGoalsAccomplished? inputCtx stx tree msgs then
           acc := acc.add msg
     return (acc, cmds)
   let ((msgs, cmds), s) ← StateRefT'.run (ReaderT.run collect { inputCtx })
@@ -320,6 +334,16 @@ def wasmLoadSnapshot (path : String) : IO UInt32 := do
     IO.eprintln s!"[WASM DEBUG] wasmLoadSnapshot failed: {e}"
     return 1
 
+/-- Where the first command of `code`, which continues another file, may
+start: after the whitespace and comments it opens with. In a whole file the
+previous command takes those as its trailing whitespace; code made only of
+comments would otherwise be parsed as a command and fail with "unexpected end
+of input". -/
+private def wasmCodeStart (inputCtx : Parser.InputContext) (env : Environment) : String.Pos.Raw :=
+  let s := Parser.whitespace.run inputCtx { env, options := {} } (Parser.getTokenTable env)
+    { cache := Parser.initCacheForInput inputCtx.inputString, pos := 0 }
+  if s.hasError then 0 else s.pos
+
 /--
 Compiles `code` as the continuation of `context`, elaborating `context` only
 once across calls.
@@ -359,7 +383,8 @@ def wasmCompileWithContext (context code : String) (fileName : String := "<input
         cache.extract (cache.size - min cache.size wasmContextCacheSize) cache.size
       pure s
   let inputCtx := Parser.mkInputContext code fileName
-  let (msgs, commands, s) ← wasmElabCommands inputCtx ctxState {}
+  let (msgs, commands, s) ← wasmElabCommands inputCtx ctxState
+    { pos := wasmCodeStart inputCtx ctxState.env }
   wasmLastRun.set (some { fileMap := inputCtx.fileMap, env := s.env, commands })
   wasmPrintMessages inputCtx.fileMap msgs (fromContext := false)
   return if msgs.toList.any (·.severity == .error) then 1 else 0
