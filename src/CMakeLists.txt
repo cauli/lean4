@@ -740,6 +740,14 @@ else()
     set(GIT_SHA1 "")
   endif()
 endif()
+# A browser build that differs from a released library's commit only in code
+# that library does not contain (the frontend in `Lean.Shell`) carries that
+# commit instead, so it loads the library's `.olean` files, whose headers must
+# name the commit of the binary that reads them.
+if(LEAN_GITHASH_OVERRIDE)
+  message(STATUS "githash overridden: ${LEAN_GITHASH_OVERRIDE}")
+  set(GIT_SHA1 "${LEAN_GITHASH_OVERRIDE}")
+endif()
 configure_file("${LEAN_SOURCE_DIR}/githash.h.in" "${LEAN_BINARY_DIR}/githash.h")
 
 if(USE_LAKE AND STAGE EQUAL 0)
